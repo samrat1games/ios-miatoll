@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Raw image -> Android sparse image (RAW + DONT_CARE chunks).  Usage: img2simg.py IN OUT [--dry]
+"""Raw image -> Android sparse image (RAW + DONT_CARE chunks).  Usage: img2simg.py IN OUT [--dry] [--consume]
+
+--consume punches each source range out of IN (APFS F_PUNCHHOLE) right after it was written, so
+IN and OUT never need disk space at the same time. IN is destroyed: keep OUT only
 
 Stand-in for AOSP img2simg (not available on macOS). Zero 4 KiB blocks become DONT_CARE."""
-import struct, sys
+import fcntl, os, struct, sys
 
 BLK = 4096
 MAXRAW = 64 << 20   # keep chunks modest for fastboot's resparse
 
 
-def main(src, dst, dry):
+def main(src, dst, dry, consume=False):
     size = __import__('os').path.getsize(src)
     assert size % BLK == 0
     total = size // BLK
@@ -34,6 +37,7 @@ def main(src, dst, dry):
     if dry:
         return
     f.seek(0)
+    g = open(src, 'r+b') if consume else None
     out = open(dst, 'wb')
     out.write(struct.pack('<IHHHHIIII', 0xED26FF3A, 1, 0, 28, 12, BLK, total, len(chunks), 0))
     for t, n, off in chunks:
@@ -41,10 +45,14 @@ def main(src, dst, dry):
             out.write(struct.pack('<HHII', t, 0, n, 12 + n * BLK))
             f.seek(off)
             out.write(f.read(n * BLK))
+            if consume:
+                out.flush()
+                os.fsync(out.fileno())
+                fcntl.fcntl(g.fileno(), 99, struct.pack('<IIqq', 0, 0, off, n * BLK))   # F_PUNCHHOLE
         else:
             out.write(struct.pack('<HHII', t, 0, n, 12))
     out.close()
 
 
 if __name__ == '__main__':
-    main(sys.argv[1], sys.argv[2], '--dry' in sys.argv)
+    main(sys.argv[1], sys.argv[2], '--dry' in sys.argv, '--consume' in sys.argv)
