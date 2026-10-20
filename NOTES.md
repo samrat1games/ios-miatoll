@@ -1,3 +1,24 @@
+# miatoll (curtana / Redmi Note 9S, SM6250) port notes
+
+## Handoff 2026-10-20 (first boots on the phone)
+
+Repo: github.com/samrat1games/ios-miatoll (public). Board values: `board/miatoll.json` (all verified from the live FDT).
+
+**Observed on hardware** (temporary `fastboot boot`, read-only root, `sweetusb=2`, log via `sudo tools/sweet-usbnet-macos.sh logs-X.txt`):
+- shim + XNU boot; USB-Ethernet (ue0) and the UDP live log work (DWC3 @0xa600000 as sweet).
+- UFS works: `BSD root: ufsroot0`, HFS+ header check on the (Android) userdata fails as expected (`unknown Volume Signature`).
+- Touch FT8756: bit-bang SPI on GPIO53-56 works (valid CRC; pin order miso=53 mosi=54 clk=55 cs=56 is right, swapped gives err 5).
+  The chip returns `0xEF` (id efef): **touch firmware is not running**; the vendor driver downloads it to PRAM on every power-on
+  (`fts_fw_resume`, boot-mode protocol, ECC check; blob `include/firmware/fw_huaxing_v0e.i` in MiCode curtana-q-oss, Android reports fw 0e).
+  Next: implement boot-mode reset + PRAM download in sweet_touch.c (reset GPIO8 is the TP reset; LCD reset is a different pin - UNVERIFIED).
+- `sweet_rpmh_vreg_enable` only allows ldoc11 (2950-3400 mV); the L18A vote is rejected (EINVAL, harmless: the IC already answers).
+
+**Not done / guesses:** buttons (PM6150 SPMI) unchecked; cpus=1 used for bring-up; sweet-root-tweaks skipped the mobileactivationd data ark
+(no system container in the fresh image); iOS root image `research/ipsw-x/ios16-root.img` built on macOS (tools/mkiosroot-macos.sh, RESUME=1)
+but not yet unmounted/fsck-ed or flashed. Android userdata is still intact; partition backups in `backup/` (not in git).
+Boot images: `shim/out/shim-boot-test.img` (read-only), `shim/out/shim-boot-full.img` (ufsrw=1 rootrw=1, for after flashing userdata).
+CI runs: 39460722893 (first kernel), 39467241779 (kernel + patch 0082).
+
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
 ## Agent handoff / active work (2026-10-15, latest)

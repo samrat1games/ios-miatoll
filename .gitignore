@@ -9,3 +9,5 @@ xnu/out/
 xnu/out-*/
 __pycache__/
 apps/
+logs-*.txt
+logs/
