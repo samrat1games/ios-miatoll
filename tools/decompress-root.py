@@ -45,14 +45,15 @@ def rewrite(path, st):
     """Decompress IN PLACE: truncating and rewriting the same data makes macOS drop decmpfs for the whole
     inode, so every hard link stays valid. (Replacing a name with a new file empties the other links of a
     compressed hard-linked inode - found the hard way.)"""
-    fd = os.open(path, os.O_RDWR)
-    try:
-        chunks, size = [], 0
+    chunks = []
+    with open(path, 'rb') as src:        # read first, through a read-only descriptor (O_RDWR decompresses to empty)
         while True:
-            b = os.read(fd, 8 << 20)
+            b = src.read(8 << 20)
             if not b:
                 break
             chunks.append(b)
+    fd = os.open(path, os.O_RDWR)
+    try:
         os.ftruncate(fd, 0)
         for b in chunks:
             os.write(fd, b)
