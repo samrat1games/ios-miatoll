@@ -20,7 +20,12 @@ os=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 sysos=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
 appos=$(cd "$(dirname "$3")" && pwd)/$(basename "$3")
 out=$4 size_gb=${5:-16}
-[[ ! -e $out ]] || { echo "refusing to overwrite $out" >&2; exit 1; }
+resume=${RESUME:-}
+if [[ -z $resume ]]; then
+	[[ ! -e $out ]] || { echo "refusing to overwrite $out (RESUME=1 continues an interrupted run)" >&2; exit 1; }
+else
+	[[ -e $out ]] || { echo "RESUME=1 but $out does not exist" >&2; exit 1; }
+fi
 sudo -v
 
 work=$(mktemp -d /tmp/mkiosroot.XXXXXX)
@@ -48,11 +53,13 @@ app_mp=$(attach "$appos" appos)
 # the Linux script copies <volume>/root; on macOS the volume itself is the root
 rootof() { if [[ -d $1/root/System ]]; then echo "$1/root"; else echo "$1"; fi; }
 
-truncate -s "${size_gb}G" "$out"
-# newfs_hfs needs a device node, not a file: format via a temporary attach.
-dev=$(hdiutil attach -nomount -imagekey diskimage-class=CRawDiskImage "$out" 2>/dev/null | awk '{print $1; exit}')
-newfs_hfs -s -J -v iOSRoot "${dev/disk/rdisk}" >/dev/null
-hdiutil detach "$dev" >/dev/null 2>&1
+if [[ -z $resume ]]; then
+	truncate -s "${size_gb}G" "$out"
+	# newfs_hfs needs a device node, not a file: format via a temporary attach.
+	dev=$(hdiutil attach -nomount -imagekey diskimage-class=CRawDiskImage "$out" 2>/dev/null | awk '{print $1; exit}')
+	newfs_hfs -s -J -v iOSRoot "${dev/disk/rdisk}" >/dev/null
+	hdiutil detach "$dev" >/dev/null 2>&1
+fi
 root="$work/root"; mkdir "$root"
 hdiutil attach -owners on -nobrowse -imagekey diskimage-class=CRawDiskImage -mountpoint "$root" "$out" >/dev/null 2>&1
 rootdev=$(diskutil info "$root" | awk '/Device Node/{print $3}')
@@ -65,28 +72,31 @@ copy() {
 	sudo mkdir -p "$2"
 	sudo ditto "$1" "$2"
 }
-copy "$(rootof "$os_mp")" "$root"
-copy "$(rootof "$sys_mp")" "$root/private/preboot/Cryptexes/OS"
-copy "$(rootof "$app_mp")" "$root/private/preboot/Cryptexes/App"
+if [[ -z $resume ]]; then
+	copy "$(rootof "$os_mp")" "$root"
+	copy "$(rootof "$sys_mp")" "$root/private/preboot/Cryptexes/OS"
+	copy "$(rootof "$app_mp")" "$root/private/preboot/Cryptexes/App"
 
-# Shared cache where dyld looks at ignition level 1: hard links.
-dsc=private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld
-sudo mkdir -p "$root/System/Library/Caches/com.apple.dyld"
-for f in "$root/$dsc"/*; do sudo ln "$f" "$root/System/Library/Caches/com.apple.dyld/${f##*/}"; done
+	# Shared cache where dyld looks at ignition level 1: hard links.
+	dsc=private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld
+	sudo mkdir -p "$root/System/Library/Caches/com.apple.dyld"
+	for f in "$root/$dsc"/*; do sudo ln "$f" "$root/System/Library/Caches/com.apple.dyld/${f##*/}"; done
 
-# Hard-link every cryptex file with no counterpart in the OS root.
-for c in OS App; do
-	(cd "$root/private/preboot/Cryptexes/$c" && sudo find . ! -type d ! -path './System/Library/Caches/com.apple.dyld/*') |
-	while IFS= read -r f; do
-		f=${f#./}
-		if ! sudo test -e "$root/$f" && ! sudo test -L "$root/$f"; then
-			sudo mkdir -p "$root/$(dirname "$f")"
-			src="$root/private/preboot/Cryptexes/$c/$f"
-			if sudo test -L "$src"; then sudo cp -P "$src" "$root/$f"; else sudo ln "$src" "$root/$f"; fi
-			echo "linked $c:/$f"
-		fi
+	# Hard-link every cryptex file with no counterpart in the OS root.
+	for c in OS App; do
+		(cd "$root/private/preboot/Cryptexes/$c" && sudo find . ! -type d ! -path './System/Library/Caches/com.apple.dyld/*') |
+		while IFS= read -r f; do
+			f=${f#./}
+			if ! sudo test -e "$root/$f" && ! sudo test -L "$root/$f"; then
+				sudo mkdir -p "$root/$(dirname "$f")"
+				src="$root/private/preboot/Cryptexes/$c/$f"
+				if sudo test -L "$src"; then sudo cp -P "$src" "$root/$f"; else sudo ln "$src" "$root/$f"; fi
+				echo "linked $c:/$f"
+			fi
+		done
 	done
-done
+
+fi
 
 # logd stores (owner _logd 272), system keybag: identical to the Linux script.
 db="$root/private/var/db"
@@ -94,10 +104,11 @@ sudo install -d -o 272 -g 272 -m 0751 "$db/diagnostics"
 sudo install -d -o 272 -g 272 -m 0755 "$db/uuidtext" "$db/diagnostics/timesync"
 for d in diagnostics uuidtext diagnostics/timesync; do sudo install -o 272 -g 272 -m 0644 /dev/null "$db/$d/.migrated"; done
 sudo install -d -m 0700 -o 0 -g 0 "$root/private/var/keybags"
+# BSD install cannot read /dev/stdin: stage the plist in a file.
 printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
 	'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-	'<plist version="1.0"><dict><key>KeyBagKeys</key><data>U1dFRVQ=</data></dict></plist>' |
-	sudo install -m 0600 -o 0 -g 0 /dev/stdin "$root/private/var/keybags/systembag.kb"
+	'<plist version="1.0"><dict><key>KeyBagKeys</key><data>U1dFRVQ=</data></dict></plist>' > "$work/systembag.kb"
+sudo install -m 0600 -o 0 -g 0 "$work/systembag.kb" "$root/private/var/keybags/systembag.kb"
 
 if [[ -d "$(dirname "$0")/../apps/stage/Payload" ]]; then
 	sudo "$(dirname "$0")/add-apps.sh" "$root"
