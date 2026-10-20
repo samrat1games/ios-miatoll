@@ -9,23 +9,58 @@ err 45). macOS reads such files transparently; each is rewritten in place with
 owner, mode, flags (minus UF_COMPRESSED), times and xattrs (minus decmpfs and
 the resource fork) kept. Hard links are re-linked to the one rewritten inode.
 Run as root so chown works. Idempotent."""
-import os, stat, sys
+import ctypes, ctypes.util, os, stat, sys
+
+_libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+_NOFOLLOW = 0x0001
+
+
+def listxattr(path):
+    b = path.encode()
+    n = _libc.listxattr(b, None, 0, _NOFOLLOW)
+    if n <= 0:
+        return []
+    buf = ctypes.create_string_buffer(n)
+    n = _libc.listxattr(b, buf, n, _NOFOLLOW)
+    return [x.decode() for x in buf.raw[:n].split(b'\0') if x]
+
+
+def getxattr(path, name):
+    b, nb = path.encode(), name.encode()
+    n = _libc.getxattr(b, nb, None, 0, 0, _NOFOLLOW)
+    buf = ctypes.create_string_buffer(max(n, 1))
+    n = _libc.getxattr(b, nb, buf, n, 0, _NOFOLLOW)
+    return buf.raw[:n]
+
+
+def setxattr(path, name, val):
+    if _libc.setxattr(path.encode(), name.encode(), val, len(val), 0, _NOFOLLOW):
+        raise OSError(ctypes.get_errno(), 'setxattr ' + name)
 
 UF_COMPRESSED = 0x20
-SKIP_XATTR = {'com.apple.decmpfs', 'com.apple.ResourceFork'}
+SKIP_XATTR = {'com.apple.decmpfs', 'com.apple.ResourceFork', 'com.apple.provenance'}
 
 
 def rewrite(path, st):
     tmp = path + '.sweet-tmp'
+    try:
+        _rewrite(path, st, tmp)
+    except BaseException:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def _rewrite(path, st, tmp):
     with open(path, 'rb') as src, open(tmp, 'wb') as dst:
         while True:
             b = src.read(8 << 20)
             if not b:
                 break
             dst.write(b)
-    for x in os.listxattr(path, follow_symlinks=False):
+    for x in listxattr(path):
         if x not in SKIP_XATTR:
-            os.setxattr(tmp, x, os.getxattr(path, x, follow_symlinks=False), follow_symlinks=False)
+            setxattr(tmp, x, getxattr(path, x))
     os.chown(tmp, st.st_uid, st.st_gid)
     os.chmod(tmp, stat.S_IMODE(st.st_mode))
     os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
@@ -37,6 +72,10 @@ def rewrite(path, st):
 
 
 def main(root):
+    for d, dirs, files in os.walk(root):          # leftovers of an aborted run
+        for f in files:
+            if f.endswith('.sweet-tmp'):
+                os.unlink(os.path.join(d, f))
     done = {}            # (dev, ino) -> new path
     n = err = 0
     for d, dirs, files in os.walk(root):
