@@ -10,7 +10,7 @@ def load(name='miatoll', quiet=False):
         if not isinstance(d, dict):
             continue
         v = d['v']
-        out[k] = int(v, 0) if isinstance(v, str) else v
+        out[k] = int(v, 0) if isinstance(v, str) and v[:1].isdigit() else v
         if not d.get('verified'):
             bad.append(k)
     if bad and not quiet:
