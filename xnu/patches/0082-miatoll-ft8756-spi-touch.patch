@@ -1,0 +1,280 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 03defe6..2d82600 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -9,6 +9,7 @@
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <sys/errno.h>
++#include <string.h>
+ #include <kern/clock.h>
+ #include <kern/thread.h>
+ #include <kern/sched_prim.h>
+@@ -487,6 +488,242 @@ touch_focaltech(void)
+ 	return 0;
+ }
+ 
++/*
++ * miatoll / curtana: Focaltech FT8756 (TDDI) on QUP SE11 SPI (GPIO53-56).
++ * The SPI wires are driven as plain GPIO (mode 0, ~500 kHz): this needs no
++ * GENI firmware, clocks or SE state from the bootloader. The protocol is the
++ * vendor one (MiCode curtana-q-oss drivers/input/touchscreen/ft8756_spi).
++ * The IC is read-only here: no reset pulse (on a TDDI the touch reset is the
++ * display reset) and no register writes. Pin roles (miso,mosi,clk,cs) are the
++ * standard QUP order; a second attempt swaps miso/mosi.
++ */
++#define TSPI_WEST_PA    0x03500000u     /* TLMM WEST tile: GPIO53..56 */
++#define TSPI_PIN_BASE   53u
++#define TSPI_CMD_READ   0xa0u           /* READ_CMD: 0x80 | DATA_CRC_EN */
++#define TSPI_DUMMY      3u
++#define TSPI_HDR        4u
++#define TSPI_MAXRD      62u             /* touch frame: 1 + 3 + 6 * 10 - 2 */
++
++static struct {
++	vm_offset_t gpio;
++	unsigned miso, mosi, clk, cs;
++} sp;
++
++#define TSPI_CFG(n)     ((uint32_t)(n) * 0x1000u)
++#define TSPI_IO(n)      (TSPI_CFG(n) + 4u)
++
++static void
++tspi_pin(unsigned pin, bool out, bool high)
++{
++	uint32_t cfg = touch_rd(sp.gpio, TSPI_CFG(pin));
++	if (out) {
++		touch_wr(sp.gpio, TSPI_IO(pin), high ? 2u : 0u);
++	}
++	cfg &= ~0x3ffu;                  /* mux 0 = GPIO, no pull */
++	cfg |= (2u << 6) | (out ? 0x200u : 0u); /* 6 mA */
++	touch_wr(sp.gpio, TSPI_CFG(pin), cfg);
++}
++
++static inline void
++tspi_out(unsigned pin, bool high)
++{
++	touch_wr(sp.gpio, TSPI_IO(pin), high ? 2u : 0u);
++}
++
++static inline unsigned
++tspi_in(unsigned pin)
++{
++	return touch_rd(sp.gpio, TSPI_IO(pin)) & 1u;
++}
++
++static void
++tspi_xfer(const uint8_t *tx, uint8_t *rx, unsigned len)
++{
++	tspi_out(sp.cs, false);
++	delay(2);
++	for (unsigned i = 0; i < len; ++i) {
++		uint8_t o = tx[i], v = 0;
++		for (int b = 7; b >= 0; --b) {
++			tspi_out(sp.mosi, (o >> b) & 1u);
++			delay(1);
++			tspi_out(sp.clk, true);
++			delay(1);
++			v = (uint8_t)((v << 1) | tspi_in(sp.miso));
++			tspi_out(sp.clk, false);
++		}
++		rx[i] = v;
++	}
++	delay(2);
++	tspi_out(sp.cs, true);
++}
++
++/* CRC-16/KERMIT as in the vendor driver (init 0xffff, poly 0x8408 reflected). */
++static uint16_t
++tspi_crc(const uint8_t *d, unsigned len)
++{
++	uint16_t crc = 0xffffu;
++	for (unsigned i = 0; i < len; ++i) {
++		crc ^= d[i];
++		for (unsigned j = 0; j < 8; ++j) {
++			crc = (crc & 1u) ? (uint16_t)((crc >> 1) ^ 0x8408u) : (uint16_t)(crc >> 1);
++		}
++	}
++	return crc;
++}
++
++/* fts_read(): header cmd,ctrl,len_hi,len_lo, 3 dummy, data, crc16 (LE). */
++static int
++tspi_read(uint8_t cmd, uint8_t *data, unsigned len)
++{
++	uint8_t tx[TSPI_HDR + TSPI_DUMMY + TSPI_MAXRD + 2];
++	uint8_t rx[sizeof(tx)];
++	unsigned total = TSPI_HDR + TSPI_DUMMY + len + 2u;
++	if (!len || len > TSPI_MAXRD) {
++		return EINVAL;
++	}
++	for (unsigned t = 0; t < 3; ++t) {
++		memset(tx, 0, sizeof(tx));
++		tx[0] = cmd;
++		tx[1] = TSPI_CMD_READ;
++		tx[2] = (uint8_t)(len >> 8);
++		tx[3] = (uint8_t)len;
++		tspi_xfer(tx, rx, total);
++		delay(150);
++		if (rx[3] & 0xa0u) {
++			continue;       /* status not ready */
++		}
++		const uint8_t *d = rx + TSPI_HDR + TSPI_DUMMY;
++		uint16_t want = (uint16_t)(d[len] | ((unsigned)d[len + 1] << 8));
++		if (tspi_crc(d, len) != want) {
++			continue;
++		}
++		memcpy(data, d, len);
++		return 0;
++	}
++	return EIO;
++}
++
++static int
++tspi_reg(uint8_t reg, uint8_t *v)
++{
++	return tspi_read(reg, v, 1);
++}
++
++static int
++tspi_touch(void)
++{
++	uint8_t d[TSPI_MAXRD];
++	int x[TOUCH_MAX] = {0}, y[TOUCH_MAX] = {0};
++	uint32_t mask = 0;
++	/* Vendor buffer: buf[0]=cmd 0x01, buf[1..] = data; points at buf[3 + 6i]. */
++	int err = tspi_read(0x01, d, sizeof(d));
++	if (err) {
++		return err;
++	}
++	if ((d[0] & 0xf0u) != 0x90u) {
++		return EIO;
++	}
++	unsigned n = d[1] & 15u;
++	if (n > TOUCH_MAX) {
++		return EIO;
++	}
++	unsigned active = 0;
++	for (unsigned i = 0; i < TOUCH_MAX; ++i) {
++		const uint8_t *p = d + 2u + 6u * i;
++		unsigned id = p[2] >> 4, event = p[0] >> 6;
++		if (id >= 0x0au) {
++			break;          /* unused record */
++		}
++		if (id >= TOUCH_MAX || (mask & (1u << id))) {
++			return EIO;
++		}
++		if (event == 1u) {
++			continue;       /* UP */
++		}
++		if (event == 3u) {
++			return EIO;
++		}
++		unsigned px = ((unsigned)(p[0] & 15u) << 8) | p[1];
++		unsigned py = ((unsigned)(p[2] & 15u) << 8) | p[3];
++		if (px > 1079 || py > 2399) {
++			return EIO;
++		}
++		mask |= 1u << id;
++		x[id] = (int)px;
++		y[id] = (int)py;
++		++active;
++	}
++	if (n == 0 && active) {
++		return EIO;
++	}
++	touch_report(mask, x, y);
++	return 0;
++}
++
++static bool
++tspi_probe(unsigned miso, unsigned mosi, unsigned clk, unsigned cs)
++{
++	uint8_t h = 0, l = 0;
++	sp.miso = miso;
++	sp.mosi = mosi;
++	sp.clk = clk;
++	sp.cs = cs;
++	tspi_pin(cs, true, true);
++	tspi_pin(clk, true, false);
++	tspi_pin(mosi, true, false);
++	tspi_pin(miso, false, false);
++	touch_wait(5);
++	int e1 = tspi_reg(0xa3, &h);
++	int e2 = tspi_reg(0x9f, &l);
++	printf("SWEET TOUCH: FTS probe miso=%u mosi=%u clk=%u cs=%u err=%d/%d id=%02x%02x (want 8756)\n",
++	    miso, mosi, clk, cs, e1, e2, h, l);
++	return !e1 && !e2 && h == 0x87u && l == 0x56u;
++}
++
++static void
++touch_spi_run(void)
++{
++	sp.gpio = ml_io_map(TSPI_WEST_PA, 0x40000);
++	if (!sp.gpio || !st.gpio) {
++		printf("SWEET TOUCH: FTS MMIO mapping failed\n");
++		return;
++	}
++	/* IRQ is GPIO9 on the NORTH tile; keep it an input with pull-up. */
++	touch_gpio(9, 0, 3, 3, false, false);
++	/* touch_vddio = pm6150 L18A (1.696-1.904 V); may already be on from ABL. */
++	int power_error = sweet_rpmh_vreg_enable("ldoa18", 1800);
++	if (power_error) {
++		printf("SWEET TOUCH: L18A RPMh enable failed %d; continuing (rail may be on)\n", power_error);
++	}
++	touch_wait(20);
++	const unsigned b = TSPI_PIN_BASE;
++	if (!tspi_probe(b, b + 1, b + 2, b + 3) && !tspi_probe(b + 1, b, b + 2, b + 3)) {
++		printf("SWEET TOUCH: FT8756 not found on SPI; stopping (no reset was sent)\n");
++		return;
++	}
++	printf("SWEET TOUCH: selected FT8756 SPI, 1080x2400, poll=10ms irq-hint=%d\n", st.irq_hint);
++	unsigned errors = 0, ticks = 0;
++	for (;;) {
++		if (!st.irq_hint || st.active || !(touch_rd(st.gpio, TOUCH_GPIO_IO(9)) & 1u) ||
++		    (++ticks % 10u) == 0) {
++			int err = tspi_touch();
++			if (err) {
++				if ((errors++ % 100u) == 0) {
++					printf("SWEET TOUCH: FTS report err=%d\n", err);
++				}
++				if (errors == 10) {
++					touch_report(0, st.x, st.y);
++				}
++			} else {
++				errors = 0;
++			}
++		}
++		touch_wait(10);
++	}
++}
++
++static int touch_bus_spi = 1;
++
+ static bool
+ touch_se_init(void)
+ {
+@@ -558,6 +795,16 @@ touch_thread(void *arg, wait_result_t result)
+ 	(void)PE_parse_boot_argn("sweettouchdelay", &delay_s, sizeof(delay_s));
+ 	printf("SWEET TOUCH: starting in %u s\n", delay_s);
+ 	touch_wait(delay_s * 1000u);
++	if (touch_bus_spi) {
++		printf("SWEET TOUCH: miatoll FT8756 SPI (GPIO bit-bang)\n");
++		st.gpio = ml_io_map(TOUCH_NORTH_PA, 0x5b000);
++		if (st.gpio) {
++			touch_spi_run();
++		} else {
++			printf("SWEET TOUCH: TLMM mapping failed\n");
++		}
++		goto out;
++	}
+ 	printf("SWEET TOUCH: mapping GCC/TLMM/SE7\n");
+ 	st.gcc = ml_io_map(TOUCH_GCC_PA, 0x60000);
+ 	st.gpio = ml_io_map(TOUCH_NORTH_PA, 0x5b000);
+@@ -646,6 +893,7 @@ sweet_touch_init(void)
+ 	st.started = true;
+ 	(void)PE_parse_boot_argn("sweettouch", &enabled, sizeof(enabled));
+ 	(void)PE_parse_boot_argn("sweettouchirq", &st.irq_hint, sizeof(st.irq_hint));
++	(void)PE_parse_boot_argn("sweettouchspi", &touch_bus_spi, sizeof(touch_bus_spi));
+ 	if (!enabled) {
+ 		printf("SWEET TOUCH: disabled (sweettouch=0)\n");
+ 		return;

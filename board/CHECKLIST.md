@@ -9,3 +9,13 @@ Everything in `board/miatoll.json` with `"verified": false` is a copy of sweet a
 5. Buttons/PMIC: SPMI SIDs and GPIOs for power/volume (patch 0060); regulator rails (0062).
 6. CPU: patches 0065/0078 assume sweet's MPIDR layout.
 7. Build kernel via CI (fork needed), then QEMU smoke test: `tools/qemu-sweet.py`.
+
+## Status 2026-10-20 (curtana / Redmi Note 9S, FT8756 TDDI)
+
+- Board values verified from the live FDT (see `board/miatoll.json`).
+- Touch: `xnu/patches/0082-miatoll-ft8756-spi-touch.patch` adds a read-only FT8756 SPI driver
+  (GPIO bit-bang on GPIO53-56, vendor protocol from MiCode curtana-q-oss), boot-arg `sweettouchspi=0` falls back to the I2C path.
+  Compile-checked with stubs only; NOT tested on hardware. No reset pulse is sent (TDDI: touch reset = display reset).
+  Unverified: pin roles (probe tries MISO/MOSI swap), L18A rail via RPMh resource "ldoa18", whether the touch FW is running when ABL hands over.
+- Buttons (power/volume via PM6150 SPMI, patch 0060 `sweet_keys.c`): not yet checked against curtana.
+- Backlight/display: ABL framebuffer only, no panel driver; untested.
