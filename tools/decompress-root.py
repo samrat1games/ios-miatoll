@@ -42,33 +42,24 @@ SKIP_XATTR = {'com.apple.decmpfs', 'com.apple.ResourceFork', 'com.apple.provenan
 
 
 def rewrite(path, st):
-    tmp = path + '.sweet-tmp'
+    """Decompress IN PLACE: truncating and rewriting the same data makes macOS drop decmpfs for the whole
+    inode, so every hard link stays valid. (Replacing a name with a new file empties the other links of a
+    compressed hard-linked inode - found the hard way.)"""
+    fd = os.open(path, os.O_RDWR)
     try:
-        _rewrite(path, st, tmp)
-    except BaseException:
-        if os.path.lexists(tmp):
-            os.unlink(tmp)
-        raise
-
-
-def _rewrite(path, st, tmp):
-    with open(path, 'rb') as src, open(tmp, 'wb') as dst:
+        chunks, size = [], 0
         while True:
-            b = src.read(8 << 20)
+            b = os.read(fd, 8 << 20)
             if not b:
                 break
-            dst.write(b)
-    for x in listxattr(path):
-        if x not in SKIP_XATTR:
-            setxattr(tmp, x, getxattr(path, x))
-    os.chown(tmp, st.st_uid, st.st_gid)
-    os.chmod(tmp, stat.S_IMODE(st.st_mode))
-    os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
-    os.chflags(path, 0)
-    os.replace(tmp, path)
-    flags = st.st_flags & ~UF_COMPRESSED
-    if flags:
-        os.chflags(path, flags)
+            chunks.append(b)
+        os.ftruncate(fd, 0)
+        for b in chunks:
+            os.write(fd, b)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
 
 
 def main(root):
@@ -86,11 +77,7 @@ def main(root):
                 if not stat.S_ISREG(st.st_mode) or not (st.st_flags & UF_COMPRESSED):
                     continue
                 key = (st.st_dev, st.st_ino)
-                if key in done:
-                    os.chflags(p, 0)
-                    os.unlink(p)
-                    os.link(done[key], p)
-                else:
+                if key not in done:
                     rewrite(p, st)
                     done[key] = p
                 n += 1
