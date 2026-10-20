@@ -227,6 +227,7 @@ def main():
     ap.add_argument('--kernel', help='matching unstripped kernel, for exact framebuffer text decoding (uses llvm-nm)')
     ap.add_argument('--fail-on-panic', action='store_true', help='exit 2 for a visible panic, 3 for incomplete/blank decoding; requires --kernel')
     ap.add_argument('--live-serial', action='store_true', help='stream serial console output to stdout in real time')
+    ap.add_argument('--watch', action='store_true', help='run until Ctrl-C and refresh OUTDIR/fb.png + index.html every second (serve OUTDIR over http)')
     ap.add_argument('--check-env', action='store_true', help='check QEMU installation and dependencies without running a payload')
     a = ap.parse_args()
 
@@ -293,6 +294,20 @@ def main():
             p.wait()
             return 0
 
+        if a.watch:
+            open(f'{out}/index.html', 'w').write('<!doctype html><title>ios-miatoll QEMU</title><body style="margin:0;background:#111;text-align:center"><img id=i style="height:100vh"><script>setInterval(()=>i.src="fb.png?"+Date.now(),1500)</script>')
+            time.sleep(2)
+            while p.poll() is None:
+                if a.live_serial:
+                    serial_pos = stream_serial_file(serial_file, serial_pos)
+                try:
+                    qmp(mon, pmemsave=(FB_BASE, FB_STRIDE * FB_H, f'{out}/fb.raw'))
+                    write_png(f'{out}/fb.tmp.png', open(f'{out}/fb.raw', 'rb').read())
+                    os.replace(f'{out}/fb.tmp.png', f'{out}/fb.png')
+                except Exception as e:
+                    print('watch:', e, file=sys.stderr)
+                time.sleep(1)
+            return 1
         t0 = time.time()
         while p.poll() is None and time.time() - t0 < a.secs:
             if a.live_serial:
