@@ -99,6 +99,9 @@ printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
 	'<plist version="1.0"><dict><key>KeyBagKeys</key><data>U1dFRVQ=</data></dict></plist>' |
 	sudo install -m 0600 -o 0 -g 0 /dev/stdin "$root/private/var/keybags/systembag.kb"
 
+if [[ -d "$(dirname "$0")/../apps/stage/Payload" ]]; then
+	sudo "$(dirname "$0")/add-apps.sh" "$root"
+fi
 echo "now run: sudo python3 tools/sweet-root-tweaks.py $root   (then press Enter here to finish)"
 read -r _
 sudo rm -rf "$root/.fseventsd" "$root/.Spotlight-V100" "$root/.Trashes" "$root/.DS_Store" 2>/dev/null || true
