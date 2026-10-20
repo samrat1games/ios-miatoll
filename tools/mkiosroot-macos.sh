@@ -27,10 +27,13 @@ else
 	[[ -e $out ]] || { echo "RESUME=1 but $out does not exist" >&2; exit 1; }
 fi
 sudo -v
+( while true; do sudo -n true; sleep 50; done ) 2>/dev/null &
+keepalive=$!
 
 work=$(mktemp -d /tmp/mkiosroot.XXXXXX)
 disks=()
 cleanup() {
+	kill "$keepalive" 2>/dev/null || true
 	for d in ${disks[@]+"${disks[@]}"}; do hdiutil detach "$d" -force >/dev/null 2>&1 || true; done
 	rmdir "$work"/* "$work" 2>/dev/null || true
 }
@@ -70,7 +73,7 @@ sudo touch "$root/.metadata_never_index"
 copy() {
 	echo "copying $1 -> ${2#"$root"}"
 	sudo mkdir -p "$2"
-	sudo ditto "$1" "$2"
+	sudo ditto --nopreserveHFSCompression "$1" "$2"
 }
 if [[ -z $resume ]]; then
 	copy "$(rootof "$os_mp")" "$root"
@@ -113,8 +116,9 @@ sudo install -m 0600 -o 0 -g 0 "$work/systembag.kb" "$root/private/var/keybags/s
 if [[ -d "$(dirname "$0")/../apps/stage/Payload" ]]; then
 	sudo "$(dirname "$0")/add-apps.sh" "$root"
 fi
-echo "now run: sudo python3 tools/sweet-root-tweaks.py $root   (then press Enter here to finish)"
-read -r _
+# Bring-up tweaks, then decompress every decmpfs file in place (XNU here has no decompressors).
+sudo python3 "$(dirname "$0")/sweet-root-tweaks.py" "$root"
+sudo python3 "$(dirname "$0")/decompress-root.py" "$root"
 sudo rm -rf "$root/.fseventsd" "$root/.Spotlight-V100" "$root/.Trashes" "$root/.DS_Store" 2>/dev/null || true
 df -h "$root"
 diskutil unmount "$root" >/dev/null
