@@ -151,6 +151,17 @@ static uint64_t le64(const uint8_t *p)
 }
 
 /* Name the filesystem whose superblock starts at block lba (f2fs/ext4). */
+#ifdef __clang__
+/* GCC inlines __builtin_strcmp against literals; clang calls the libc one. */
+int strcmp(const char *a, const char *b)
+{
+	while (*a && *a == *b) {
+		a++, b++;
+	}
+	return (unsigned char)*a - (unsigned char)*b;
+}
+#endif
+
 static const char *fs_type(uint32_t lba)
 {
 	if (read_blocks(lba, 1, data))
