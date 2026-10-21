@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..5068b38 100644
+index 51c3fd6..f2751fb 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,12 @@
@@ -15,7 +15,7 @@ index 51c3fd6..5068b38 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,6 +60,273 @@ sm_probe(void)
+@@ -54,6 +60,287 @@ sm_probe(void)
  	}
  }
  
@@ -34,17 +34,31 @@ index 51c3fd6..5068b38 100644
 +static uint8_t sm_meta[16384] __attribute__((aligned(16384)));
 +static uint8_t sm_buf[SM_CHUNK] __attribute__((aligned(16384)));
 +#define SM_WIN          (2u * 1024u * 1024u)
-+static vm_offset_t sm_win[SM_REGION_SZ / SM_WIN];
 +
-+/* map the 2 MiB window holding region offset off (132 MiB at once does not fit the kernel map) */
++/* The kernel map has no room for 132 MiB of device mappings: one 2 MiB window, re-pointed with pmap_map_bd
++ * (device memory attributes) at whichever part of the modem region is being written. */
++extern uint64_t sm_pmap_map_bd(uint64_t va, uint64_t start, uint64_t end, int prot) __asm__("_pmap_map_bd");
++static vm_offset_t sm_win_va;
++static int64_t sm_win_idx = -1;
++
 +static vm_offset_t
 +sm_window(uint64_t off)
 +{
-+	uint64_t i = off / SM_WIN;
-+	if (!sm_win[i]) {
-+		sm_win[i] = ml_io_map(SM_REGION_PA + i * SM_WIN, SM_WIN);
++	int64_t i = (int64_t)(off / SM_WIN);
++	if (!sm_win_va) {
++		sm_win_va = ml_io_map(SM_REGION_PA, SM_WIN);
++		if (!sm_win_va) {
++			return 0;
++		}
++		sm_win_idx = 0;
 +	}
-+	return sm_win[i] ? sm_win[i] + (off % SM_WIN) : 0;
++	if (sm_win_idx != i) {
++		uint64_t pa = SM_REGION_PA + (uint64_t)i * SM_WIN;
++		sm_pmap_map_bd(sm_win_va, pa, pa + SM_WIN, VM_PROT_READ | VM_PROT_WRITE);
++		__asm__ volatile("dsb ishst\n\ttlbi vmalle1is\n\tdsb ish\n\tisb" : : : "memory");
++		sm_win_idx = i;
++	}
++	return sm_win_va + (off % SM_WIN);
 +}
 +
 +/* the region is mapped as device memory: aligned 64-bit stores only */
@@ -289,7 +303,7 @@ index 51c3fd6..5068b38 100644
  static void
  sm_thread(void *arg, wait_result_t result)
  {
-@@ -61,13 +334,22 @@ sm_thread(void *arg, wait_result_t result)
+@@ -61,13 +348,22 @@ sm_thread(void *arg, wait_result_t result)
  	(void)result;
  	touch_wait(70 * 1000u);
  	sm_probe();
