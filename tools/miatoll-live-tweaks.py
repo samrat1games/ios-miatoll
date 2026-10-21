@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Edits for the root image PULLED BACK from the phone after its first boot (containers now exist).
+
+  sudo miatoll-live-tweaks.py MOUNTED_ROOT        (mounted with owners)
+
+ 1. mobileactivationd data ark (needs the container the first boot creates)
+ 2. ByHost com.apple.migration.<IOPlatformUUID>.plist: CurrentHost prefs need it, else datamigrator
+    re-runs on every boot. UUID = XNU generatePlatformUUID(unique-chip-id, chip-id) from tools/mkadt.py
+ 3. USB internet: /usr/libexec/sweet-netup + a launchd job (tools/netup)
+Idempotent."""
+import hashlib, importlib.util, os, plistlib, shutil, struct, sys, uuid
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+spec = importlib.util.spec_from_file_location('swt', os.path.join(HERE, 'sweet-root-tweaks.py'))
+swt = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(swt)
+import board
+
+MOBILE = swt.MOBILE
+
+
+def platform_uuid():
+    B = board.load('miatoll', quiet=True)
+    ecid = int.from_bytes(B['ecid_tag'].upper().encode()[:7].ljust(7, b'\0'), 'big') << 8 | 1
+    space = bytes([0xA6, 0xDD, 0x4C, 0xCB, 0xB5, 0xE8, 0x4A, 0xF5, 0xAC, 0xDD, 0xB6, 0xDC, 0x6A, 0x05, 0x42, 0xB8])
+    d = bytearray(hashlib.sha1(space + struct.pack('<Q', ecid) + struct.pack('<I', 0x8015)).digest()[:16])
+    d[6] = (d[6] & 0x0F) | 0x50
+    d[8] = (d[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(d))).upper()
+
+
+def byhost(root):
+    u = platform_uuid()
+    d = os.path.join(root, 'private/var/mobile/Library/Preferences/ByHost')
+    os.makedirs(d, exist_ok=True)
+    os.chown(d, MOBILE, MOBILE)
+    os.chmod(d, 0o755)
+    for name in (u, u.lower()):
+        swt.save(os.path.join(d, f'com.apple.migration.{name}.plist'), {'LastSystemVersion': swt.BUILD},
+                 MOBILE, MOBILE, 0o600)
+    print('ByHost migration prefs for', u)
+
+
+def netup(root):
+    src = os.path.join(HERE, 'netup', 'sweet-netup')
+    if not os.path.exists(src):
+        print('warning: tools/netup/sweet-netup missing (run tools/netup/build.sh); skipped')
+        return
+    dst = os.path.join(root, 'usr/libexec/sweet-netup')
+    shutil.copyfile(src, dst)
+    os.chown(dst, 0, 0)
+    os.chmod(dst, 0o755)
+    path = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(path)
+    plist = swt.load(path)
+    key = '/System/Library/LaunchDaemons/com.sweet.netup.plist'
+    plist['LaunchDaemons'][key] = {
+        'Label': 'com.sweet.netup',
+        'ProgramArguments': ['/usr/libexec/sweet-netup'],
+        'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 5,
+        'POSIXSpawnType': 'Interactive',
+        'StandardErrorPath': '/dev/console', 'StandardOutPath': '/dev/console',
+    }
+    swt.save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    print('sweet-netup installed + launchd job added')
+
+
+def main():
+    root = sys.argv[1]
+    if not os.path.isdir(os.path.join(root, 'System/Library/xpc')):
+        sys.exit(__doc__)
+    swt.activation(root)
+    byhost(root)
+    netup(root)
+
+
+if __name__ == '__main__':
+    main()
