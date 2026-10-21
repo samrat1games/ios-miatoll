@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..48e56f1 100644
+index 51c3fd6..4902123 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,12 @@
@@ -15,7 +15,7 @@ index 51c3fd6..48e56f1 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +60,369 @@ sm_probe(void)
+@@ -54,20 +60,377 @@ sm_probe(void)
  	}
  }
  
@@ -311,7 +311,15 @@ index 51c3fd6..48e56f1 100644
 +static void
 +sm_watch(void)
 +{
-+	vm_offset_t smem = ml_io_map(SM_SMEM_PA, SM_SMEM_SZ);
++	printf("SWEET MODEM: watch start\n");
++	/* reuse the already working window (the kernel map is nearly out of address space) */
++	vm_offset_t smem = sm_window(0);
++	if (smem) {
++		sm_pmap_map_bd(smem, SM_SMEM_PA, SM_SMEM_PA + SM_WIN, VM_PROT_READ | VM_PROT_WRITE);
++		__asm__ volatile("dsb ishst\n\ttlbi vmalle1is\n\tdsb ish\n\tisb" : : : "memory");
++		sm_win_idx = -1;
++		printf("SWEET MODEM: smem mapped at %#lx\n", (unsigned long)smem);
++	}
 +	if (!smem) {
 +		printf("SWEET MODEM: cannot map SMEM\n");
 +		return;
