@@ -12,3 +12,4 @@ apps/stage/
 apps/*/build/
 logs-*.txt
 logs/
+board/identity.json

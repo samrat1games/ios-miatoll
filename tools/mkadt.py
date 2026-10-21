@@ -63,7 +63,21 @@ u64 = lambda *v: struct.pack('<%dQ' % len(v), *v)
 cstr = lambda s: s.encode() + b'\0'
 pad32 = lambda s: s.encode()[:31].ljust(32, b'\0')
 # synthetic identity (locally administered MACs 02:..., serial prefix of the board tag)
-SERIAL = (B['ecid_tag'].upper() + '0001')[:12]
+def _identity():
+    # generated once on first build, then kept forever in board/identity.json (gitignored)
+    import json, os, random, string
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'board', 'identity.json')
+    try:
+        return json.load(open(path))
+    except (OSError, ValueError):
+        alpha = string.ascii_uppercase.replace('O', '').replace('I', '') + string.digits
+        ident = {'serial': 'F' + ''.join(random.SystemRandom().choice(alpha) for _ in range(11)), 'imei': ''}
+        json.dump(ident, open(path, 'w'), indent=1)
+        return ident
+
+
+IDENT = _identity()
+SERIAL = IDENT['serial']
 MAC_WIFI = bytes([0x02, 0x4d, 0x49, 0x41, 0x54, 0x01])
 MAC_BT = bytes([0x02, 0x4d, 0x49, 0x41, 0x54, 0x02])
 MAC_ETH = bytes([0x02, 0x4d, 0x49, 0x41, 0x54, 0x03])
