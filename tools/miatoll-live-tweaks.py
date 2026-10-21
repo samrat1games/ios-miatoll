@@ -66,13 +66,27 @@ def netup(root):
     print('sweet-netup installed + launchd job added')
 
 
+def remove_netup_job(root):
+    """launchd panics on a non-platform daemon (sweet-netup is ad-hoc signed): keep the job out unless forced."""
+    path = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(path)
+    plist = swt.load(path)
+    key = '/System/Library/LaunchDaemons/com.sweet.netup.plist'
+    if plist['LaunchDaemons'].pop(key, None) is not None:
+        swt.save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+        print('sweet-netup launchd job removed')
+
+
 def main():
     root = sys.argv[1]
     if not os.path.isdir(os.path.join(root, 'System/Library/xpc')):
         sys.exit(__doc__)
     swt.activation(root)
     byhost(root)
-    netup(root)
+    if '--netup' in sys.argv:
+        netup(root)
+    else:
+        remove_netup_job(root)
 
 
 if __name__ == '__main__':
