@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..f2751fb 100644
+index 51c3fd6..8c8567c 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,12 @@
@@ -15,7 +15,7 @@ index 51c3fd6..f2751fb 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,6 +60,287 @@ sm_probe(void)
+@@ -54,20 +60,360 @@ sm_probe(void)
  	}
  }
  
@@ -300,18 +300,69 @@ index 51c3fd6..f2751fb 100644
 +	return r0 || r1 ? EIO : 0;
 +}
 +
++/*
++ * Step 3: is the modem alive? Its SMP2P item (magic "$SMP") appears in shared memory (SMEM, 0x80900000) once the
++ * modem OS is running. Polled; no interrupts are wired yet.
++ */
++#define SM_SMEM_PA      0x80900000ULL
++#define SM_SMEM_SZ      0x200000u
++#define SM_SMP2P_MAGIC  0x504d5324u
++
++static void
++sm_watch(void)
++{
++	vm_offset_t smem = ml_io_map(SM_SMEM_PA, SM_SMEM_SZ);
++	if (!smem) {
++		printf("SWEET MODEM: cannot map SMEM\n");
++		return;
++	}
++	uint32_t seen = 0;
++	for (unsigned sec = 0; sec < 60; ++sec) {
++		for (uint32_t off = 0; off + 64 <= SM_SMEM_SZ; off += 4) {
++			if (*(volatile uint32_t *)(smem + off) != SM_SMP2P_MAGIC) {
++				continue;
++			}
++			uint32_t w1 = *(volatile uint32_t *)(smem + off + 4);
++			uint32_t w2 = *(volatile uint32_t *)(smem + off + 8);
++			uint32_t w3 = *(volatile uint32_t *)(smem + off + 12);
++			uint32_t key = off ^ (w3 << 8);
++			if (seen == key) {
++				continue;
++			}
++			seen = key;
++			printf("SWEET MODEM: t=%us SMP2P at smem+%#x ver/feat=%#x pids=%#x entries=%#x\n", sec, off, w1, w2, w3);
++			uint32_t valid = (w3 >> 16) & 0xffff;
++			for (uint32_t e = 0; e < valid && e < 16; ++e) {
++				char name[17];
++				for (int c = 0; c < 16; ++c) {
++					name[c] = *(volatile uint8_t *)(smem + off + 20 + 20 * e + c);
++				}
++				name[16] = 0;
++				printf("SWEET MODEM:   entry %u '%s' = %#x\n", e, name, *(volatile uint32_t *)(smem + off + 20 + 20 * e + 16));
++			}
++		}
++		touch_wait(1000);
++	}
++	printf("SWEET MODEM: watch done\n");
++}
++
  static void
  sm_thread(void *arg, wait_result_t result)
  {
-@@ -61,13 +348,22 @@ sm_thread(void *arg, wait_result_t result)
+ 	(void)arg;
  	(void)result;
- 	touch_wait(70 * 1000u);
+-	touch_wait(70 * 1000u);
++	touch_wait(10 * 1000u);
  	sm_probe();
 +	int boot = 1;
 +	(void)PE_parse_boot_argn("sweetmodemstd", &sm_std, sizeof(sm_std));
 +	(void)PE_parse_boot_argn("sweetmodemboot", &boot, sizeof(boot));
 +	if (boot) {
-+		printf("SWEET MODEM: boot result %d\n", sm_boot());
++		int r = sm_boot();
++		printf("SWEET MODEM: boot result %d\n", r);
++		if (!r) {
++			sm_watch();
++		}
 +	}
  	(void)thread_terminate(current_thread());
  	thread_block(THREAD_CONTINUE_NULL);
