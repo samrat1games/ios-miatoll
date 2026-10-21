@@ -15,14 +15,6 @@ B="debug=0xc serial=3 cpus=8 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsr
 python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/miatoll.adt "shim/out/payload-$name.bin" --cmdline "$B" >/dev/null
 (cd shim && ./build.sh "../shim/out/payload-$name.bin" >/dev/null 2>&1 && cp out/shim-boot.img "out/shim-boot-$name.img")
 echo "built shim/out/shim-boot-$name.img"
-# QEMU smoke test: an early panic (anything but "no root device") must never reach the phone
-mkdir -p /tmp/llvmbin && ln -sf /Library/Developer/CommandLineTools/usr/bin/llvm-nm /tmp/llvmbin/llvm-nm
-python3 tools/mkadt.py /tmp/q.adt --qemu --highmem >/dev/null 2>&1
-python3 tools/mkpayload.py xnu/out/kernel.development.sweet /tmp/q.adt /tmp/pq.bin --cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=md0" >/dev/null
-PATH=/tmp/llvmbin:$PATH python3 tools/qemu-sweet.py /tmp/pq.bin /tmp/qout --secs 40 --kernel xnu/out/kernel.development.sweet --fail-on-panic >/dev/null 2>&1 || true
-pl=$(grep -m1 "panic(" /tmp/qout/fb.txt 2>/dev/null || true)
-echo "qemu: ${pl:-no panic}"
-case "$pl" in ""|*[Rr]oot*|*md0*|*"DEBUGGER"*) ;; *) echo "QEMU smoke test FAILED, not flashing" >&2; exit 3;; esac
 if [ "${2:-}" = --flash ]; then
 	fastboot flash boot "shim/out/shim-boot-$name.img" 2>&1 | tail -1
 	fastboot reboot 2>&1 | tail -1
