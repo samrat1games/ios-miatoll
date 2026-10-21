@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..6cfd66e 100644
+index 51c3fd6..b24c896 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,12 @@
@@ -15,7 +15,7 @@ index 51c3fd6..6cfd66e 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,6 +60,233 @@ sm_probe(void)
+@@ -54,6 +60,251 @@ sm_probe(void)
  	}
  }
  
@@ -152,6 +152,24 @@ index 51c3fd6..6cfd66e 100644
 +	return e;
 +}
 +
++/* standard SIP call as Linux issues it: TZ answers 1 (interrupted) or -12 (busy) until it is done, then call again */
++static uint64_t
++sm_scm(unsigned svc, unsigned cmd, uint64_t arginfo, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t *r1)
++{
++	uint64_t r0 = 0, x1 = 0, x2 = 0, x3 = 0;
++	for (unsigned n = 0; n < 5000; ++n) {
++		r0 = sm_smc(SM_FID(0, svc, cmd), arginfo, a0, a1, a2, &x1, &x2, &x3);
++		if ((uint32_t)r0 != 1u && (uint32_t)r0 != 0xfffffff4u) {
++			break;
++		}
++		touch_wait(1);
++	}
++	if (r1) {
++		*r1 = x1;
++	}
++	return r0;
++}
++
 +static int
 +sm_boot(void)
 +{
@@ -193,7 +211,7 @@ index 51c3fd6..6cfd66e 100644
 +		return EINVAL;
 +	}
 +	printf("SWEET MODEM: MDT %zu bytes, %u segments\n", mdt, phnum);
-+	uint64_t r1 = 0, r2 = 0, r3 = 0, r0;
++	uint64_t r1 = 0, r0;
 +	/* TZ takes 32-bit buffer addresses: stage the metadata in the last 16 KiB of the modem region (below 4 GiB,
 +	 * overwritten by the modem's bss afterwards) */
 +	const uint64_t meta_off = SM_REGION_SZ - sizeof(sm_meta);
@@ -202,13 +220,13 @@ index 51c3fd6..6cfd66e 100644
 +	}
 +	__asm__ volatile("dsb sy" : : : "memory");
 +	/* INIT_IMAGE (peripheral, metadata phys): arginfo = 2 args, VAL then RW buffer */
-+	r0 = sm_smc(SM_FID(1, SM_SVC_PIL, 1), 0x2u | (2u << 6), SM_PAS_ID, SM_REGION_PA + meta_off, 0, &r1, &r2, &r3);
++	r0 = sm_scm(SM_SVC_PIL, 1, 0x2u | (2u << 6), SM_PAS_ID, SM_REGION_PA + meta_off, 0, &r1);
 +	printf("SWEET MODEM: INIT_IMAGE meta pa %#llx: x0=%#llx x1=%#llx\n", SM_REGION_PA + meta_off, r0, r1);
 +	if (r0 || r1) {
 +		return EIO;
 +	}
 +	/* MEM_SETUP (peripheral, region base, region size) */
-+	r0 = sm_smc(SM_FID(1, SM_SVC_PIL, 2), 0x3u, SM_PAS_ID, SM_REGION_PA, SM_REGION_SZ, &r1, &r2, &r3);
++	r0 = sm_scm(SM_SVC_PIL, 2, 0x3u, SM_PAS_ID, SM_REGION_PA, SM_REGION_SZ, &r1);
 +	printf("SWEET MODEM: MEM_SETUP: x0=%#llx x1=%#llx\n", r0, r1);
 +	if (r0 || r1) {
 +		return EIO;
@@ -241,7 +259,7 @@ index 51c3fd6..6cfd66e 100644
 +	}
 +	printf("SWEET MODEM: segments loaded, AUTH_AND_RESET\n");
 +	__asm__ volatile("dsb sy" : : : "memory");
-+	r0 = sm_smc(SM_FID(1, SM_SVC_PIL, 5), 0x1u, SM_PAS_ID, 0, 0, &r1, &r2, &r3);
++	r0 = sm_scm(SM_SVC_PIL, 5, 0x1u, SM_PAS_ID, 0, 0, &r1);
 +	printf("SWEET MODEM: AUTH_AND_RESET: x0=%#llx x1=%#llx\n", r0, r1);
 +	return r0 || r1 ? EIO : 0;
 +}
@@ -249,7 +267,7 @@ index 51c3fd6..6cfd66e 100644
  static void
  sm_thread(void *arg, wait_result_t result)
  {
-@@ -61,6 +294,11 @@ sm_thread(void *arg, wait_result_t result)
+@@ -61,6 +312,11 @@ sm_thread(void *arg, wait_result_t result)
  	(void)result;
  	touch_wait(70 * 1000u);
  	sm_probe();
