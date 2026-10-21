@@ -146,6 +146,18 @@ def remove_netup_job(root):
         print('sweet-netup launchd job removed')
 
 
+def modemfw(root):
+    """Modem + WLAN firmware from the phone's own `modem` partition (tools/fat16-ls.py) for the PIL loader (patch 0088)."""
+    src = os.path.join(HERE, '..', 'research', 'modem', 'fs', 'IMAGE')
+    dst = os.path.join(root, 'private/var/miatoll/modem')
+    os.makedirs(dst, exist_ok=True)
+    for n in sorted(os.listdir(src)):
+        if n.startswith('MODEM.') or n in ('BDWLAN.BIN', 'WLANMDSP.MBN', 'QDSP6M.QDB'):
+            shutil.copyfile(os.path.join(src, n), os.path.join(dst, n))
+    os.chmod(dst, 0o755)
+    print('modem firmware ->', dst)
+
+
 def main():
     root = sys.argv[1]
     if not os.path.isdir(os.path.join(root, 'System/Library/xpc')):
@@ -153,6 +165,7 @@ def main():
     swt.activation(root)
     byhost(root)
     remove_netup_job(root)
+    modemfw(root)
     if '--no-net' not in sys.argv:
         netplugin(root)
     if '--no-apps' not in sys.argv:
