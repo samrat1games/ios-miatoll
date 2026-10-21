@@ -100,9 +100,11 @@ def staged_apps(root):
         subprocess.run(['ditto', '--nopreserveHFSCompression', app, dst], check=True)
         n += 1
     print(f'{n} staged system apps copied into /Applications')
-    for f in glob.glob(os.path.join(root, 'private/var/containers/Data/System/*/Library/Caches/com.apple.LaunchServices-*')):
-        os.unlink(f)
-        print('removed', os.path.relpath(f, root))
+    for pat in ('private/var/mobile/Containers/Data/InternalDaemon/*/Library/Caches/*LaunchServices-*.csstore',
+                'private/var/containers/Data/System/*/Library/Caches/com.apple.LaunchServices-*'):
+        for f in glob.glob(os.path.join(root, pat)):
+            os.unlink(f)
+            print('removed', os.path.relpath(f, root))
 
 
 def sweettools(root):
