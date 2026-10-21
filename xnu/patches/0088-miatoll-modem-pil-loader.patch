@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..8c8567c 100644
+index 51c3fd6..48e56f1 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,12 @@
@@ -15,7 +15,7 @@ index 51c3fd6..8c8567c 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +60,360 @@ sm_probe(void)
+@@ -54,20 +60,369 @@ sm_probe(void)
  	}
  }
  
@@ -317,7 +317,16 @@ index 51c3fd6..8c8567c 100644
 +		return;
 +	}
 +	uint32_t seen = 0;
-+	for (unsigned sec = 0; sec < 60; ++sec) {
++	for (unsigned sec = 0; sec < 150; ++sec) {
++		if (sec % 5 == 0) {
++			uint32_t *w = (uint32_t *)smem;
++			uint32_t nz = 0;
++			for (uint32_t i = 0; i < SM_SMEM_SZ / 4; i += 16) {
++				nz += w[i] != 0;
++			}
++			printf("SWEET MODEM: t=%us smem init=%#x free=%#x avail=%#x nonzero=%u toc=%#x\n", sec,
++			    w[48], w[49], w[50], nz, *(volatile uint32_t *)(smem + SM_SMEM_SZ - 0x1000));
++		}
 +		for (uint32_t off = 0; off + 64 <= SM_SMEM_SZ; off += 4) {
 +			if (*(volatile uint32_t *)(smem + off) != SM_SMP2P_MAGIC) {
 +				continue;
