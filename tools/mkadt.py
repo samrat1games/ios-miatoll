@@ -61,6 +61,12 @@ def d22ap_product(path=D22AP_ADT):
 u32 = lambda *v: struct.pack('<%dI' % len(v), *v)
 u64 = lambda *v: struct.pack('<%dQ' % len(v), *v)
 cstr = lambda s: s.encode() + b'\0'
+pad32 = lambda s: s.encode()[:31].ljust(32, b'\0')
+# synthetic identity (locally administered MACs 02:..., serial prefix of the board tag)
+SERIAL = (B['ecid_tag'].upper() + '0001')[:12]
+MAC_WIFI = bytes([0x02, 0x4d, 0x49, 0x41, 0x54, 0x01])
+MAC_BT = bytes([0x02, 0x4d, 0x49, 0x41, 0x54, 0x02])
+MAC_ETH = bytes([0x02, 0x4d, 0x49, 0x41, 0x54, 0x03])
 
 
 def node(name, props=(), children=()):
@@ -109,6 +115,11 @@ def build(seed=None, qemu=False, highmem=False):
         # MobileGestalt reads these from /chosen, and mobileactivationd's
         # DeviceType then takes its native "Hactivation" branch (state
         # Activated without an activation record; no SEP, no baseband here).
+        # Identity that iBoot would fill from the factory syscfg (placeholders in the real tree):
+        # synthetic, clearly not Apple's. Settings > About shows serial / model / Wi-Fi + Bluetooth address.
+        ('mac-address-wifi0', MAC_WIFI),
+        ('mac-address-bluetooth0', MAC_BT),
+        ('mac-address-ethernet0', MAC_ETH),
         ('certificate-production-status', u32(0)),
         ('effective-production-status-ap', u32(0)),
         ('certificate-security-mode', u32(1)),
@@ -221,6 +232,11 @@ def build(seed=None, qemu=False, highmem=False):
         ph(),
         ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,sweet') + cstr('qcom,sm7150') + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
+        ('serial-number', pad32(SERIAL)),
+        ('mlb-serial-number', pad32(SERIAL + 'MLB')),
+        ('model-number', pad32('MIATO')),
+        ('regulatory-model-number', pad32('A1865')),
+        ('region-info', pad32('LL/A')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
         ('manufacturer', cstr('Apple Inc.')),
