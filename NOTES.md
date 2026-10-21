@@ -1,5 +1,23 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## State 2026-10-21 (late): iOS is the main firmware, USB internet works
+
+- **Boot partition = our shim** (`shim/out/shim-boot-v2.img`: kernel from CI run 39551510934 + miatoll.adt + cmdline `... cpus=8 ... sweetfb_noconsole=1 sweetusb=2`);
+  `vbmeta` flashed with `--disable-verity --disable-verification`. Stock `boot.img`/`vbmeta.img` are in `backup/` (sha256 in SHA256SUMS): restore Android with
+  `fastboot flash boot backup/boot.img && fastboot flash vbmeta backup/vbmeta.img && fastboot -w`.
+- **Editing the phone's root = pull, tweak, diff-flash:** `adb exec-out dd userdata | tools/pull-sparse.py ios16-live.img` (16 GiB, ~25 min, from recovery),
+  `tools/tweak-live-macos.sh` (sudo; makes `ios16-live-base.img` clone first), `tools/sparsediff.py base live fix.simg`, `fastboot flash userdata fix.simg`.
+  Always pull again after the phone ran iOS (the kernel writes the volume); a diff is only safe against the exact pulled state.
+- **USB internet:** a configd plugin (tools/netup/sweet-netplugin.c, installed as EAPOLController.bundle with Builtin removed, bundle id is on configd's allow-list)
+  publishes State:/Network/Service/SweetUSB (ue0 192.168.7.2, router 192.168.7.1, DNS 1.1.1.1/8.8.8.8). Mac side: `sudo tools/sweet-usbnet-share-macos.sh on` (pf NAT).
+  Verified with tcpdump: HTTPS to Apple, OCSP over HTTP. A launchd daemon of our own PANICS launchd ("unexpected exec of non-platform binary").
+- Stock apps (Calculator, Mail, Notes, ...) sit in /private/var/staged_system_apps and are not installed here: the tweaks copy them to /Applications and
+  drop the LaunchServices csstore. Device identity (serial MIATOLL0001, model MIATO, MACs 02:4d:49:41:54:xx) comes from synthetic ADT props (tools/mkadt.py).
+- App: apps/MiatollTools (diagnostics + IPA installer, setuid root, entitlements in its signature). Build: apps/MiatollTools/build.sh.
+- Drivers: no ready IOKit drivers anywhere (searched GitHub/web). Sources to port from: Xiaomi kernel curtana-q-oss (icnss/cnss2 WCN3990 Wi-Fi, hci_qca/btfm_slim BT,
+  msm/camera), but iOS needs closed IO80211 / bluetoothd / camera stacks above them: months of work, not started.
+
+
 ## MILESTONE 2026-10-21: iOS 16.7.16 lock screen + working touch on curtana
 
 State: Apple logo (first-boot data migration, ~15-20 min with cpus=8) -> lock screen, touch works (FT8756). Booted with
