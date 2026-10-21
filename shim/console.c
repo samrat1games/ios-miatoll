@@ -14,9 +14,11 @@
 volatile uint32_t *con_fb = (volatile uint32_t *)FB_BASE;
 static uint32_t con_bg;
 static int row;
+static int quiet;
 
 void con_clear(uint32_t bg)
 {
+	quiet = 0;
 	for (int y = 0; y < FB_H; y++) {
 		volatile uint32_t *line = con_fb + y * (FB_STRIDE / 4);
 		for (int x = 0; x < FB_W; x++)
@@ -28,6 +30,8 @@ void con_clear(uint32_t bg)
 
 static void put_char(int col, char ch, uint32_t fg)
 {
+	if (quiet)
+		return;
 	if (ch < 0x20 || ch > 0x7e)
 		ch = '?';
 	const unsigned char *g = font8x16[ch - 0x20];
@@ -94,4 +98,20 @@ void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint
 		put_str(col, buf, WHITE);
 	}
 	row++;
+}
+
+#include "logo.h"
+
+/* black screen with the "Powered by iOS" logo; text stays hidden until the next con_clear() */
+void con_logo(void)
+{
+	con_clear(0xff000000U);
+	for (int y = 0; y < LOGO_H; y++) {
+		volatile uint32_t *line = con_fb + (LOGO_Y + y) * (FB_STRIDE / 4) + LOGO_X;
+		for (int x = 0; x < LOGO_W; x++) {
+			uint32_t a = logo_alpha[y * LOGO_W + x];
+			line[x] = 0xff000000U | (a << 16) | (a << 8) | a;
+		}
+	}
+	quiet = 1;
 }
