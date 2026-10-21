@@ -105,6 +105,24 @@ def staged_apps(root):
         print('removed', os.path.relpath(f, root))
 
 
+def sweettools(root):
+    """Our diagnostics + IPA installer app (apps/SweetTools). setuid root so it can write /Applications."""
+    import subprocess
+    src = os.path.join(HERE, '..', 'apps', 'SweetTools', 'build', 'SweetTools.app')
+    if not os.path.isdir(src):
+        print('warning: apps/SweetTools/build/SweetTools.app missing (run apps/SweetTools/build.sh); skipped')
+        return
+    dst = os.path.join(root, 'Applications', 'SweetTools.app')
+    shutil.rmtree(dst, ignore_errors=True)
+    subprocess.run(['ditto', '--nopreserveHFSCompression', src, dst], check=True)
+    for d, dn, fn in os.walk(dst):
+        for x in dn + fn:
+            os.chown(os.path.join(d, x), 0, 0)
+    os.chown(dst, 0, 0)
+    os.chmod(os.path.join(dst, 'SweetTools'), 0o4755)
+    print('SweetTools.app installed (setuid root)')
+
+
 def remove_netup_job(root):
     """launchd panics on a non-platform daemon (sweet-netup is ad-hoc signed): keep the job out unless forced."""
     path = os.path.join(root, 'System/Library/xpc/launchd.plist')
@@ -127,6 +145,7 @@ def main():
         netplugin(root)
     if '--no-apps' not in sys.argv:
         staged_apps(root)
+        sweettools(root)
 
 
 if __name__ == '__main__':
