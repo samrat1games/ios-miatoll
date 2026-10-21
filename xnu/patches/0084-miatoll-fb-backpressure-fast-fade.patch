@@ -1,0 +1,65 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index a62416c..ad27b5e 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -116,6 +116,7 @@ public:
+ 	uint32_t      fFlushTicks;    /* vsync ticks between panel copies */
+ 	bool          fPowerOff;      /* RequestPowerChange(0) */
+ 	uint32_t      fFadeStep;      /* fade-out steps done while off */
++	volatile uint32_t fPresentedSwap; /* last swap id copied to the panel (SwapWait back-pressure) */
+ 
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 	void addClient(IOMobileFramebufferUserClient *client);
+@@ -227,15 +228,16 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 	if (fb->fPowerOff) {
+ 		/* Fade out: halve every channel each vsync, then black, then idle. */
+ 		uint32_t step = fb->fFadeStep;
+-		if (step <= 6) {
++		if (step <= 2) {
+ 			fb->fFadeStep = step + 1;
+ 		}
++		fb->fPresentedSwap = fb->fSwapID;       /* nothing to wait for while off */
+ 		IOLockUnlock(fb->fLock);
+-		if (step <= 6) {
++		if (step <= 2) {
+ 			for (uint32_t y = 0; y < fb->fHeight; y++) {
+ 				volatile uint32_t *row = (volatile uint32_t *)(fb->fPixels + (uint64_t)y * fb->fRowBytes);
+ 				for (uint32_t x = 0; x < fb->fWidth; x++) {
+-					row[x] = step < 6 ? (row[x] >> 1) & 0x7f7f7f7f : 0;
++					row[x] = step < 2 ? (row[x] >> 2) & 0x3f3f3f3f : 0;
+ 				}
+ 			}
+ 		}
+@@ -253,7 +255,10 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 	}
+ 	IOLockUnlock(fb->fLock);
+ 	if (rec != NULL) {
++		uint32_t sid;
++		memcpy(&sid, rec + 0x50, sizeof(sid));
+ 		fb->present(rec);
++		fb->fPresentedSwap = sid;
+ 		IOFreeData(rec, SWEET_FB_SWAP_REC_SIZE);
+ 	}
+ 	sender->setTimeoutUS(SWEET_FB_VSYNC_US);
+@@ -546,6 +551,21 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		}
+ 		break;
+ 	case kSweetFBSwapWait:
++		/*
++		 * The panel copy runs at sweetfb_hz, not at the 60 Hz vsync backboardd
++		 * is told about: without waiting, CoreAnimation reuses a surface while
++		 * it is still being copied (torn / black blocks) and renders frames
++		 * that are never shown. Return once swap `want` is on the panel, but
++		 * never block long (the argument layout is a guess: bounded to 40 ms).
++		 */
++		if (args->scalarInputCount >= 1) {
++			uint32_t want = (uint32_t)args->scalarInput[0];
++			for (unsigned i = 0; i < 20 && want != 0 && want <= fFB->fSwapID &&
++			    (int32_t)(want - fFB->fPresentedSwap) > 0 && !fFB->fPowerOff; i++) {
++				IOSleep(2);
++			}
++		}
++		break;
+ 	default:
+ 		break;
+ 	}
