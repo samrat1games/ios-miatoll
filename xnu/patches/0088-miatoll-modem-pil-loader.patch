@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..309c7e0 100644
+index 51c3fd6..5068b38 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,12 @@
@@ -15,7 +15,7 @@ index 51c3fd6..309c7e0 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,6 +60,260 @@ sm_probe(void)
+@@ -54,6 +60,273 @@ sm_probe(void)
  	}
  }
  
@@ -152,31 +152,44 @@ index 51c3fd6..309c7e0 100644
 +	return e;
 +}
 +
-+/* SIP call; TZ answers 1 (interrupted) or -12 (busy) while it is not done: call again. Boot-arg sweetmodemstd=1
-+ * uses standard instead of fast calls (a standard call that never returns would lose this CPU). */
-+static int sm_std;
++/*
++ * Legacy SCM call exactly as the Android kernel (scm.c __scm_call_armv8_64) issues it: while TZ answers
++ * x0 == 1 (interrupted) the SMC is repeated with the registers TZ handed back, which resumes the call.
++ * -12 (busy) restarts it after a pause. Standard (non-atomic) calls, as subsys-pil-tz uses.
++ */
++static int sm_std = 1;
 +
 +static uint64_t
 +sm_scm(unsigned svc, unsigned cmd, uint64_t arginfo, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t *r1)
 +{
-+	uint64_t r0 = 0, x1 = 0, x2 = 0, x3 = 0;
-+	for (unsigned n = 0; n < 200; ++n) {
-+		if (n < 6) {
-+			printf("SWEET MODEM: scm %u/%u try %u (%s)\n", svc, cmd, n, sm_std ? "std" : "fast");
-+		}
-+		r0 = sm_smc(SM_FID(sm_std ? 0 : 1, svc, cmd), arginfo, a0, a1, a2, &x1, &x2, &x3);
-+		if (n < 6) {
-+			printf("SWEET MODEM: scm %u/%u -> x0=%#llx x1=%#llx x2=%#llx x3=%#llx\n", svc, cmd, r0, x1, x2, x3);
-+		}
-+		if ((uint32_t)r0 != 1u && (uint32_t)r0 != 0xfffffff4u) {
++	uint64_t ret = 0, out1 = 0;
++	for (unsigned busy = 0; busy < 70; ++busy) {
++		register uint64_t x0 __asm__("x0") = SM_FID(sm_std ? 0 : 1, svc, cmd);
++		register uint64_t x1 __asm__("x1") = arginfo;
++		register uint64_t x2 __asm__("x2") = a0;
++		register uint64_t x3 __asm__("x3") = a1;
++		register uint64_t x4 __asm__("x4") = a2;
++		register uint64_t x5 __asm__("x5") = 0;
++		register uint64_t x6 __asm__("x6") = 0;
++		unsigned resumes = 0;
++		do {
++			__asm__ volatile("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6) : :
++			    "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
++			if (resumes < 3) {
++				printf("SWEET MODEM: scm %u/%u -> x0=%#llx x1=%#llx x2=%#llx x3=%#llx\n", svc, cmd, x0, x1, x2, x3);
++			}
++		} while (x0 == 1 && ++resumes < 1000000);
++		ret = x0;
++		out1 = x1;
++		if ((uint32_t)ret != 0xfffffff4u) {
 +			break;
 +		}
-+		touch_wait(10);
++		touch_wait(30);
 +	}
 +	if (r1) {
-+		*r1 = x1;
++		*r1 = out1;
 +	}
-+	return r0;
++	return ret;
 +}
 +
 +static int
@@ -276,7 +289,7 @@ index 51c3fd6..309c7e0 100644
  static void
  sm_thread(void *arg, wait_result_t result)
  {
-@@ -61,13 +321,22 @@ sm_thread(void *arg, wait_result_t result)
+@@ -61,13 +334,22 @@ sm_thread(void *arg, wait_result_t result)
  	(void)result;
  	touch_wait(70 * 1000u);
  	sm_probe();
