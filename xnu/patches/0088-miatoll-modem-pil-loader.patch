@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..b24c896 100644
+index 51c3fd6..9dfd8ac 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,12 @@
@@ -15,7 +15,7 @@ index 51c3fd6..b24c896 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,6 +60,251 @@ sm_probe(void)
+@@ -54,6 +60,260 @@ sm_probe(void)
  	}
  }
  
@@ -152,17 +152,26 @@ index 51c3fd6..b24c896 100644
 +	return e;
 +}
 +
-+/* standard SIP call as Linux issues it: TZ answers 1 (interrupted) or -12 (busy) until it is done, then call again */
++/* SIP call; TZ answers 1 (interrupted) or -12 (busy) while it is not done: call again. Boot-arg sweetmodemstd=1
++ * uses standard instead of fast calls (a standard call that never returns would lose this CPU). */
++static int sm_std;
++
 +static uint64_t
 +sm_scm(unsigned svc, unsigned cmd, uint64_t arginfo, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t *r1)
 +{
 +	uint64_t r0 = 0, x1 = 0, x2 = 0, x3 = 0;
-+	for (unsigned n = 0; n < 5000; ++n) {
-+		r0 = sm_smc(SM_FID(0, svc, cmd), arginfo, a0, a1, a2, &x1, &x2, &x3);
++	for (unsigned n = 0; n < 200; ++n) {
++		if (n < 6) {
++			printf("SWEET MODEM: scm %u/%u try %u (%s)\n", svc, cmd, n, sm_std ? "std" : "fast");
++		}
++		r0 = sm_smc(SM_FID(sm_std ? 0 : 1, svc, cmd), arginfo, a0, a1, a2, &x1, &x2, &x3);
++		if (n < 6) {
++			printf("SWEET MODEM: scm %u/%u -> x0=%#llx x1=%#llx x2=%#llx x3=%#llx\n", svc, cmd, r0, x1, x2, x3);
++		}
 +		if ((uint32_t)r0 != 1u && (uint32_t)r0 != 0xfffffff4u) {
 +			break;
 +		}
-+		touch_wait(1);
++		touch_wait(10);
 +	}
 +	if (r1) {
 +		*r1 = x1;
@@ -267,11 +276,12 @@ index 51c3fd6..b24c896 100644
  static void
  sm_thread(void *arg, wait_result_t result)
  {
-@@ -61,6 +312,11 @@ sm_thread(void *arg, wait_result_t result)
+@@ -61,6 +321,12 @@ sm_thread(void *arg, wait_result_t result)
  	(void)result;
  	touch_wait(70 * 1000u);
  	sm_probe();
 +	int boot = 1;
++	(void)PE_parse_boot_argn("sweetmodemstd", &sm_std, sizeof(sm_std));
 +	(void)PE_parse_boot_argn("sweetmodemboot", &boot, sizeof(boot));
 +	if (boot) {
 +		printf("SWEET MODEM: boot result %d\n", sm_boot());
