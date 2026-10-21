@@ -124,6 +124,15 @@ def sweettools(root):
     os.chown(dst, 0, 0)
     os.chmod(os.path.join(dst, 'MiatollTools'), 0o4755)
     print('MiatollTools.app installed (setuid root)')
+    # The LaunchServices database does not learn about apps added to /Applications after the first boot. The
+    # registered 'App Store' icon (useless without an Apple ID) becomes the launcher: its executable is MiatollTools,
+    # which registers everything in /Applications on start (apps/MiatollTools RegisterAll).
+    slot = os.path.join(root, 'Applications', 'AppStore.app', 'AppStore')
+    if os.path.exists(slot):
+        shutil.copyfile(os.path.join(dst, 'MiatollTools'), slot)
+        os.chown(slot, 0, 0)
+        os.chmod(slot, 0o4755)
+        print('App Store icon now launches MiatollTools')
 
 
 def remove_netup_job(root):

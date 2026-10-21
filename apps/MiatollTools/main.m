@@ -13,6 +13,7 @@
 #import <sys/mount.h>
 #import <sys/stat.h>
 #import <unistd.h>
+#import <fcntl.h>
 #import <mach/mach.h>
 
 static NSString *Sysctl(const char *name) {
@@ -108,6 +109,33 @@ static NSString *RegistryText(void) {
 	return s;
 }
 
+#pragma mark - registration of /Applications apps (what uicache does)
+
+static NSString *RegisterAll(void) {
+	NSMutableString *out = [NSMutableString string];
+	Class W = NSClassFromString(@"LSApplicationWorkspace");
+	if (!W) return @"LSApplicationWorkspace недоступен";
+	id ws = ((id(*)(id, SEL))objc_msgSend)(W, NSSelectorFromString(@"defaultWorkspace"));
+	NSFileManager *fm = NSFileManager.defaultManager;
+	int ok = 0, fail = 0, already = 0;
+	for (NSString *a in [[fm contentsOfDirectoryAtPath:@"/Applications" error:nil] sortedArrayUsingSelector:@selector(compare:)]) {
+		if (![a hasSuffix:@".app"]) continue;
+		NSString *path = [@"/Applications" stringByAppendingPathComponent:a];
+		NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Info.plist"]];
+		NSString *bid = info[@"CFBundleIdentifier"]; if (!bid) continue;
+		SEL inst = NSSelectorFromString(@"applicationIsInstalled:");
+		BOOL have = [ws respondsToSelector:inst] ? ((BOOL(*)(id, SEL, id))objc_msgSend)(ws, inst, bid) : NO;
+		if (have) { already++; continue; }
+		SEL reg = NSSelectorFromString(@"registerApplication:");
+		BOOL r = [ws respondsToSelector:reg] ? ((BOOL(*)(id, SEL, NSURL *))objc_msgSend)(ws, reg, [NSURL fileURLWithPath:path]) : NO;
+		[out appendFormat:@"%@ %@ (%@)\n", r ? @"+" : @"-", a, bid]; r ? ok++ : fail++;
+	}
+	SEL rb = NSSelectorFromString(@"_LSPrivateRebuildApplicationDatabasesForSystemApps:internal:user:");
+	if ([ws respondsToSelector:rb]) { ((BOOL(*)(id, SEL, BOOL, BOOL, BOOL))objc_msgSend)(ws, rb, YES, YES, YES); [out appendString:@"перестроена база приложений\n"]; }
+	[out insertString:[NSString stringWithFormat:@"uid=%d euid=%d\nуже в системе: %d, зарегистрировано: %d, ошибок: %d\n\n", getuid(), geteuid(), already, ok, fail] atIndex:0];
+	return out;
+}
+
 #pragma mark - display and touch tests
 
 @interface ColorVC : UIViewController @property (nonatomic) int i; @end
@@ -199,7 +227,7 @@ static BOOL Unzip(NSString *zip, NSString *dest, NSString **err) {
 
 @interface MenuVC : UITableViewController @property (nonatomic, strong) NSArray *items; @end
 @implementation MenuVC
-- (void)viewDidLoad { [super viewDidLoad]; self.title = @"MiatollTools"; self.items = @[@"Система и устройство", @"Тест экрана (цвета)", @"Тест тача (мультитач)", @"Сеть (DNS/HTTP)", @"Реестр железа (IOKit)", @"Установка IPA по ссылке"]; }
+- (void)viewDidLoad { [super viewDidLoad]; self.title = @"MiatollTools"; self.items = @[@"Система и устройство", @"Тест экрана (цвета)", @"Тест тача (мультитач)", @"Сеть (DNS/HTTP)", @"Реестр железа (IOKit)", @"Установка IPA по ссылке", @"Зарегистрировать приложения из /Applications"]; }
 - (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s { return self.items.count; }
 - (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip { UITableViewCell *c = [t dequeueReusableCellWithIdentifier:@"c"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"c"]; c.textLabel.text = self.items[ip.row]; c.accessoryType = UITableViewCellAccessoryDisclosureIndicator; return c; }
 - (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
@@ -211,6 +239,7 @@ static BOOL Unzip(NSString *zip, NSString *dest, NSString **err) {
 		case 3: { TextVC *v = [TextVC new]; v.producer = ^{ return NetText(); }; vc = v; break; }
 		case 4: { TextVC *v = [TextVC new]; v.producer = ^{ return RegistryText(); }; vc = v; break; }
 		case 5: vc = [InstallVC new]; break;
+		case 6: { TextVC *v = [TextVC new]; v.producer = ^{ return RegisterAll(); }; vc = v; break; }
 	}
 	vc.title = title; [self.navigationController pushViewController:vc animated:YES];
 }
@@ -221,7 +250,9 @@ static BOOL Unzip(NSString *zip, NSString *dest, NSString **err) {
 - (BOOL)application:(UIApplication *)a didFinishLaunchingWithOptions:(NSDictionary *)o {
 	self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
 	self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[[MenuVC alloc] initWithStyle:UITableViewStyleInsetGrouped]];
-	[self.window makeKeyAndVisible]; return YES;
+	[self.window makeKeyAndVisible];
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{ NSString *r = RegisterAll(); int fd = open("/dev/console", O_WRONLY); if (fd >= 0) { dprintf(fd, "MIATOLLTOOLS: autoregister: %s\n", r.UTF8String); close(fd); } });
+	return YES;
 }
 @end
 
