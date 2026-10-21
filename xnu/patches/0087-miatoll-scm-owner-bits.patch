@@ -1,0 +1,14 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 4de0262..51c3fd6 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -46,7 +46,8 @@ sm_probe(void)
+ 	};
+ 	for (unsigned f = 0; f < 2; ++f) {
+ 		for (unsigned i = 0; i < 4; ++i) {
+-			r0 = sm_smc(SM_FID(f, SM_SVC_INFO, SM_INFO_AVAIL), 1, (SM_SVC_PIL << 8) | pil[i].cmd, 0, 0, &r1, &r2, &r3);
++			/* downstream SCM: the queried id carries the SIP owner bits (SCM_SIP_FNID = 0x02000000 | svc << 8 | cmd) */
++			r0 = sm_smc(SM_FID(f, SM_SVC_INFO, SM_INFO_AVAIL), 1, 0x02000000u | (SM_SVC_PIL << 8) | pil[i].cmd, 0, 0, &r1, &r2, &r3);
+ 			printf("SWEET MODEM: SCM IS_CALL_AVAIL(PIL %s) %s: x0=%#llx x1=%#llx x2=%#llx\n",
+ 			    pil[i].name, f ? "fast" : "std", r0, r1, r2);
+ 		}
