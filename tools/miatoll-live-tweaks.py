@@ -85,6 +85,26 @@ def netplugin(root):
     print('configd plugin installed (EAPOLController.bundle -> sweet-netplugin)')
 
 
+def staged_apps(root):
+    """iOS 16 keeps the removable stock apps (Calculator, Mail, Notes, Clock, Maps, Music, Health, ...) in
+    /private/var/staged_system_apps and installs them on first boot; that step does not run here, so the
+    home screen lacks them. Copy them into /Applications (system apps) and drop the LaunchServices
+    database so lsd re-registers /Applications at the next boot."""
+    import glob, subprocess
+    src = os.path.join(root, 'private/var/staged_system_apps')
+    n = 0
+    for app in sorted(glob.glob(os.path.join(src, '*.app'))):
+        dst = os.path.join(root, 'Applications', os.path.basename(app))
+        if os.path.exists(dst):
+            continue
+        subprocess.run(['ditto', '--nopreserveHFSCompression', app, dst], check=True)
+        n += 1
+    print(f'{n} staged system apps copied into /Applications')
+    for f in glob.glob(os.path.join(root, 'private/var/containers/Data/System/*/Library/Caches/com.apple.LaunchServices-*')):
+        os.unlink(f)
+        print('removed', os.path.relpath(f, root))
+
+
 def remove_netup_job(root):
     """launchd panics on a non-platform daemon (sweet-netup is ad-hoc signed): keep the job out unless forced."""
     path = os.path.join(root, 'System/Library/xpc/launchd.plist')
@@ -105,6 +125,8 @@ def main():
     remove_netup_job(root)
     if '--no-net' not in sys.argv:
         netplugin(root)
+    if '--no-apps' not in sys.argv:
+        staged_apps(root)
 
 
 if __name__ == '__main__':
