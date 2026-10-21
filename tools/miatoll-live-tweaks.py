@@ -66,6 +66,25 @@ def netup(root):
     print('sweet-netup installed + launchd job added')
 
 
+def netplugin(root):
+    """USB internet: a configd plugin disguised as the (unused, allow-listed) EAPOLController bundle."""
+    src = os.path.join(HERE, 'netup', 'EAPOLController')
+    if not os.path.exists(src):
+        print('warning: tools/netup/EAPOLController missing (run tools/netup/build-plugin.sh); skipped')
+        return
+    b = os.path.join(root, 'System/Library/SystemConfiguration/EAPOLController.bundle')
+    info = os.path.join(b, 'Info.plist')
+    d = swt.load(info)
+    d.pop('Builtin', None)
+    d['CFBundleExecutable'] = 'EAPOLController'
+    swt.save(info, d, 0, 0, 0o644)
+    dst = os.path.join(b, 'EAPOLController')
+    shutil.copyfile(src, dst)
+    os.chown(dst, 0, 0)
+    os.chmod(dst, 0o755)
+    print('configd plugin installed (EAPOLController.bundle -> sweet-netplugin)')
+
+
 def remove_netup_job(root):
     """launchd panics on a non-platform daemon (sweet-netup is ad-hoc signed): keep the job out unless forced."""
     path = os.path.join(root, 'System/Library/xpc/launchd.plist')
@@ -83,10 +102,9 @@ def main():
         sys.exit(__doc__)
     swt.activation(root)
     byhost(root)
-    if '--netup' in sys.argv:
-        netup(root)
-    else:
-        remove_netup_job(root)
+    remove_netup_job(root)
+    if '--no-net' not in sys.argv:
+        netplugin(root)
 
 
 if __name__ == '__main__':
