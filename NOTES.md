@@ -1,5 +1,27 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## MILESTONE 2026-10-21: iOS 16.7.16 lock screen + working touch on curtana
+
+State: Apple logo (first-boot data migration, ~15-20 min with cpus=8) -> lock screen, touch works (FT8756). Booted with
+`shim/out/shim-boot-quiet8.img` = kernel (CI run 39496557516, patches up to 0083) + `shim/out/miatoll.adt` (`--highmem`, 2 GiB bank)
++ cmdline `... cpus=8 ... sweetfb_noconsole=1 sweetusb=2`. cpus=8 works on SM6250 (2xA76+6xA55). Log over USB: `sudo tools/sweet-usbnet-macos.sh logs.txt`
+(re-run it after every phone boot: macOS drops 192.168.7.1 when the interface re-enumerates).
+
+What the macOS build needed (all fixed in the tools, see git log):
+- ditto must copy WITHOUT HFS compression (`--nopreserveHFSCompression`): XNU has no decmpfs compressors (panic: launchd exec err 45).
+- Never "replace" one name of a hard-linked compressed file: macOS then EMPTIES the other links (libobjc-trampolines.dylib -> every
+  process using blocks crashed). `tools/decompress-root.py` now rewrites in place; with the ditto flag it finds 0 files.
+- fastboot 37 cannot flash the raw 16 GiB image ("Failed reading from userdata"): `tools/img2simg.py --consume` makes a sparse image
+  while freeing the raw one (host disk is tight); DONT_CARE chunks keep stale data of an earlier flash (HFS journal "extra transactions"
+  replay corrupted the volume): flash `tools/simg-zero-complement.py` output first, then the image.
+- FT8756 needs its firmware downloaded at every boot (patch 0083, vendor fw_huaxing_v0e embedded): boot ROM answers 0xef in normal regs,
+  boot id 0x8756 (cmd 0x90), reg 0xd0 == 1; PRAM 63640 B + DRAM 4666 B via bit-banged SPI (GPIO53-56), ECC-checked, start cmd 0x08. No reset pulse needed.
+
+Known gaps: wallpaper (PosterBoard SIGTRAP, ns 2 code 5), black areas / lag (CPU rendering, throttled panel copy), slow display-off fade (patch 0079),
+no Wi-Fi/BT/SIM/audio/camera drivers, power/volume keys unchecked, L18A RPMh vote rejected (harmless). Camera.app hidden (no camera in MobileGestalt).
+Android userdata is gone; restore Android with `fastboot -w` (partition backups in backup/, not in git). Free host disk is the limiting resource.
+
+
 ## Handoff 2026-10-20 (first boots on the phone)
 
 Repo: github.com/samrat1games/ios-miatoll (public). Board values: `board/miatoll.json` (all verified from the live FDT).
