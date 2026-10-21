@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..a3b27fa 100644
+index 51c3fd6..52ee60a 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,14 @@
@@ -17,7 +17,7 @@ index 51c3fd6..a3b27fa 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,6 +62,203 @@ sm_probe(void)
+@@ -54,6 +62,243 @@ sm_probe(void)
  	}
  }
  
@@ -35,7 +35,19 @@ index 51c3fd6..a3b27fa 100644
 +
 +static uint8_t sm_meta[16384] __attribute__((aligned(16384)));
 +static uint8_t sm_buf[SM_CHUNK] __attribute__((aligned(16384)));
-+static vm_offset_t sm_region;
++#define SM_WIN          (2u * 1024u * 1024u)
++static vm_offset_t sm_win[SM_REGION_SZ / SM_WIN];
++
++/* map the 2 MiB window holding region offset off (132 MiB at once does not fit the kernel map) */
++static vm_offset_t
++sm_window(uint64_t off)
++{
++	uint64_t i = off / SM_WIN;
++	if (!sm_win[i]) {
++		sm_win[i] = ml_io_map(SM_REGION_PA + i * SM_WIN, SM_WIN);
++	}
++	return sm_win[i] ? sm_win[i] + (off % SM_WIN) : 0;
++}
 +
 +static uint64_t
 +sm_va2pa(const void *va)
@@ -54,32 +66,60 @@ index 51c3fd6..a3b27fa 100644
 +}
 +
 +/* the region is mapped as device memory: aligned 64-bit stores only */
-+static void
-+sm_copy(vm_offset_t dst, const uint8_t *src, size_t n)
++static int
++sm_copy(uint64_t off, const uint8_t *src, size_t n)
 +{
-+	size_t i = 0;
-+	for (; i + 8 <= n && (dst & 7) == 0; i += 8, dst += 8) {
-+		uint64_t v;
-+		memcpy(&v, src + i, 8);
-+		*(volatile uint64_t *)dst = v;
++	while (n) {
++		size_t k = SM_WIN - (off % SM_WIN);
++		vm_offset_t dst = sm_window(off);
++		if (k > n) {
++			k = n;
++		}
++		if (!dst) {
++			return ENOMEM;
++		}
++		size_t i = 0;
++		for (; i + 8 <= k && ((dst + i) & 7) == 0; i += 8) {
++			uint64_t v;
++			memcpy(&v, src + i, 8);
++			*(volatile uint64_t *)(dst + i) = v;
++		}
++		for (; i < k; ++i) {
++			*(volatile uint8_t *)(dst + i) = src[i];
++		}
++		src += k;
++		off += k;
++		n -= k;
 +	}
-+	for (; i < n; ++i, ++dst) {
-+		*(volatile uint8_t *)dst = src[i];
-+	}
++	return 0;
 +}
 +
-+static void
-+sm_zero(vm_offset_t dst, size_t n)
++static int
++sm_zero(uint64_t off, size_t n)
 +{
-+	for (; n && (dst & 7); --n, ++dst) {
-+		*(volatile uint8_t *)dst = 0;
++	while (n) {
++		size_t k = SM_WIN - (off % SM_WIN);
++		vm_offset_t dst = sm_window(off);
++		if (k > n) {
++			k = n;
++		}
++		if (!dst) {
++			return ENOMEM;
++		}
++		size_t i = 0;
++		for (; i < k && ((dst + i) & 7); ++i) {
++			*(volatile uint8_t *)(dst + i) = 0;
++		}
++		for (; i + 8 <= k; i += 8) {
++			*(volatile uint64_t *)(dst + i) = 0;
++		}
++		for (; i < k; ++i) {
++			*(volatile uint8_t *)(dst + i) = 0;
++		}
++		off += k;
++		n -= k;
 +	}
-+	for (; n >= 8; n -= 8, dst += 8) {
-+		*(volatile uint64_t *)dst = 0;
-+	}
-+	for (; n; --n, ++dst) {
-+		*(volatile uint8_t *)dst = 0;
-+	}
++	return 0;
 +}
 +
 +static int
@@ -110,7 +150,7 @@ index 51c3fd6..a3b27fa 100644
 +		printf("SWEET MODEM: open %s failed %d\n", name, e);
 +		return e;
 +	}
-+	vm_offset_t dst = sm_region + (pa - SM_REGION_PA);
++	uint64_t dst = pa - SM_REGION_PA;
 +	for (uint64_t off = 0; off < filesz; off += SM_CHUNK) {
 +		size_t n = (filesz - off) < SM_CHUNK ? (size_t)(filesz - off) : SM_CHUNK;
 +		e = sm_pread(vp, sm_buf, n, (off_t)off);
@@ -118,11 +158,14 @@ index 51c3fd6..a3b27fa 100644
 +			printf("SWEET MODEM: read %s @%#llx failed %d\n", name, off, e);
 +			break;
 +		}
-+		sm_copy(dst + off, sm_buf, n);
++		if (sm_copy(dst + off, sm_buf, n)) {
++			e = ENOMEM;
++			break;
++		}
 +	}
 +	vnode_put(vp);
 +	if (!e && memsz > filesz) {
-+		sm_zero(dst + filesz, (size_t)(memsz - filesz));
++		e = sm_zero(dst + filesz, (size_t)(memsz - filesz));
 +	}
 +	return e;
 +}
@@ -168,11 +211,6 @@ index 51c3fd6..a3b27fa 100644
 +		return EINVAL;
 +	}
 +	printf("SWEET MODEM: MDT %zu bytes, %u segments\n", mdt, phnum);
-+	sm_region = ml_io_map(SM_REGION_PA, SM_REGION_SZ);
-+	if (!sm_region) {
-+		printf("SWEET MODEM: ml_io_map failed\n");
-+		return ENOMEM;
-+	}
 +	uint64_t r1 = 0, r2 = 0, r3 = 0, r0;
 +	sm_clean(sm_meta, mdt);
 +	/* INIT_IMAGE (peripheral, metadata phys): arginfo = 2 args, VAL then RW buffer */
@@ -208,7 +246,9 @@ index 51c3fd6..a3b27fa 100644
 +			return EIO;
 +		}
 +		if (!filesz) {
-+			sm_zero(sm_region + (paddr - SM_REGION_PA), memsz);
++			if (sm_zero(paddr - SM_REGION_PA, memsz)) {
++				return ENOMEM;
++			}
 +		}
 +	}
 +	printf("SWEET MODEM: segments loaded, AUTH_AND_RESET\n");
@@ -221,7 +261,7 @@ index 51c3fd6..a3b27fa 100644
  static void
  sm_thread(void *arg, wait_result_t result)
  {
-@@ -61,6 +266,11 @@ sm_thread(void *arg, wait_result_t result)
+@@ -61,6 +306,11 @@ sm_thread(void *arg, wait_result_t result)
  	(void)result;
  	touch_wait(70 * 1000u);
  	sm_probe();
