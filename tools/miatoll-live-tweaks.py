@@ -106,21 +106,22 @@ def staged_apps(root):
 
 
 def sweettools(root):
-    """Our diagnostics + IPA installer app (apps/SweetTools). setuid root so it can write /Applications."""
+    """Our diagnostics + IPA installer app (apps/MiatollTools). setuid root so it can write /Applications."""
     import subprocess
-    src = os.path.join(HERE, '..', 'apps', 'SweetTools', 'build', 'SweetTools.app')
+    src = os.path.join(HERE, '..', 'apps', 'MiatollTools', 'build', 'MiatollTools.app')
     if not os.path.isdir(src):
-        print('warning: apps/SweetTools/build/SweetTools.app missing (run apps/SweetTools/build.sh); skipped')
+        print('warning: apps/MiatollTools/build/MiatollTools.app missing (run apps/MiatollTools/build.sh); skipped')
         return
-    dst = os.path.join(root, 'Applications', 'SweetTools.app')
+    shutil.rmtree(os.path.join(root, 'Applications', 'SweetTools.app'), ignore_errors=True)   # old name
+    dst = os.path.join(root, 'Applications', 'MiatollTools.app')
     shutil.rmtree(dst, ignore_errors=True)
     subprocess.run(['ditto', '--nopreserveHFSCompression', src, dst], check=True)
     for d, dn, fn in os.walk(dst):
         for x in dn + fn:
             os.chown(os.path.join(d, x), 0, 0)
     os.chown(dst, 0, 0)
-    os.chmod(os.path.join(dst, 'SweetTools'), 0o4755)
-    print('SweetTools.app installed (setuid root)')
+    os.chmod(os.path.join(dst, 'MiatollTools'), 0o4755)
+    print('MiatollTools.app installed (setuid root)')
 
 
 def remove_netup_job(root):

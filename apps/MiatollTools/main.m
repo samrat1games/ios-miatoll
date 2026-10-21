@@ -1,5 +1,5 @@
-// SweetTools: hardware diagnostics + IPA installer for iOS 16 on Redmi Note 9S (miatoll).
-// Built with tools in apps/SweetTools/build.sh (arm64, ad-hoc signed, setuid root on the image).
+// MiatollTools: hardware diagnostics + IPA installer for iOS 16 on Redmi Note 9S (miatoll).
+// Built with tools in apps/MiatollTools/build.sh (arm64, ad-hoc signed, setuid root on the image).
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <zlib.h>
@@ -199,7 +199,7 @@ static BOOL Unzip(NSString *zip, NSString *dest, NSString **err) {
 
 @interface MenuVC : UITableViewController @property (nonatomic, strong) NSArray *items; @end
 @implementation MenuVC
-- (void)viewDidLoad { [super viewDidLoad]; self.title = @"SweetTools"; self.items = @[@"Система и устройство", @"Тест экрана (цвета)", @"Тест тача (мультитач)", @"Сеть (DNS/HTTP)", @"Реестр железа (IOKit)", @"Установка IPA по ссылке"]; }
+- (void)viewDidLoad { [super viewDidLoad]; self.title = @"MiatollTools"; self.items = @[@"Система и устройство", @"Тест экрана (цвета)", @"Тест тача (мультитач)", @"Сеть (DNS/HTTP)", @"Реестр железа (IOKit)", @"Установка IPA по ссылке"]; }
 - (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s { return self.items.count; }
 - (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip { UITableViewCell *c = [t dequeueReusableCellWithIdentifier:@"c"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"c"]; c.textLabel.text = self.items[ip.row]; c.accessoryType = UITableViewCellAccessoryDisclosureIndicator; return c; }
 - (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
