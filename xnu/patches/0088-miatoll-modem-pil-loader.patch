@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..69e90fc 100644
+index 51c3fd6..df55dce 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..69e90fc 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1332 @@ sm_probe(void)
+@@ -54,20 +61,1341 @@ sm_probe(void)
  	}
  }
  
@@ -956,6 +956,15 @@ index 51c3fd6..69e90fc 100644
 +	printf("SWEET QRTR: rx type %u src %u:%#x dst %u:%#x size %u\n", h[1], h[2], h[3], h[6], h[7], h[5]);
 +	if (h[1] == QRTR_TYPE_HELLO) {
 +		qrtr_remote_node = h[2];
++	} else if (h[1] == QRTR_TYPE_NEW_SERVER && len >= 32 + 20) {
++		uint32_t c[5];
++		memcpy(c, pkt + 32, 20);
++		printf("SWEET QRTR: server service %#x instance %#x node %u port %#x\n", c[1], c[2], c[3], c[4]);
++		if (c[1] == 0x45) {
++			qrtr_have_wlfw = 1;
++			qrtr_wlfw_node = c[3];
++			qrtr_wlfw_port = c[4];
++		}
 +	} else if (h[1] == QRTR_TYPE_DATA && h[3] == QRTR_PORT_CTRL && h[5] >= 20 && len >= 32 + 20) {
 +		uint32_t c[5];
 +		memcpy(c, pkt + 32, 20);
