@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the boot logo ("Powered by" / "iOS", white on black) as an 8-bit alpha bitmap -> shim/logo.h
+"""Render the boot logo (the Apple logo with "By Samrat" below, white on black) as an 8-bit alpha bitmap -> shim/logo.h
 (used by the shim and, copied by hand into patch 0089, by the kernel). Needs Pillow + macOS SF font."""
 import sys
 from PIL import Image, ImageDraw, ImageFont
@@ -15,8 +15,12 @@ d = ImageDraw.Draw(img)
 def centered(text, f, cy):
     b = d.textbbox((0, 0), text, font=f)
     d.text(((W - (b[2] - b[0])) // 2 - b[0], cy - (b[3] - b[1]) // 2 - b[1]), text, font=f, fill=255)
-centered('Powered by', small, 1114)
-centered('iOS', big, 1262)
+# the Apple logo glyph (U+F8FF) of the system font, centred on the panel
+glyph = Image.new('L', (W, H), 0)
+ImageDraw.Draw(glyph).text((W // 2 - 260, 1000), '\uf8ff', font=ImageFont.truetype(F, 520), fill=255)
+gb = glyph.getbbox()
+shift = ((W - (gb[2] - gb[0])) // 2 - gb[0], (H - (gb[3] - gb[1])) // 2 - 40 - gb[1])
+img.paste(glyph, shift)
 credit = Image.new('L', (W, H), 0)
 d2 = ImageDraw.Draw(credit)
 f2 = font(46, 500)
