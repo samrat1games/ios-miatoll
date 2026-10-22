@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..d283104 100644
+index 51c3fd6..ef4e800 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,12 @@
@@ -15,7 +15,7 @@ index 51c3fd6..d283104 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +60,383 @@ sm_probe(void)
+@@ -54,20 +60,444 @@ sm_probe(void)
  	}
  }
  
@@ -308,63 +308,124 @@ index 51c3fd6..d283104 100644
 +#define SM_SMEM_SZ      0x200000u
 +#define SM_SMP2P_MAGIC  0x504d5324u
 +
++/*
++ * SMEM (Qualcomm shared memory): partition table at the end of the region ("$TOC"), one partition per host
++ * pair. Only partitions that involve the application processor (host 0) may be touched: reading the others
++ * hangs the CPU (bus error from the memory protection unit).
++ */
++#define SM_TOC_MAGIC    0x434f5424u     /* "$TOC" */
++#define SM_PRT_MAGIC    0x54525024u     /* "$PRT" */
++#define SM_PRIV_CANARY  0x4153u
++#define SM_HOST_GLOBAL  0xfffeu
++
++static vm_offset_t sm_smem;
++
++static inline uint32_t
++sm_r32(vm_offset_t a)
++{
++	return *(volatile uint32_t *)a;
++}
++
++static inline uint16_t
++sm_r16(vm_offset_t a)
++{
++	return *(volatile uint16_t *)a;
++}
++
++/* find item `item` in the partition shared by the AP and `remote`; returns its address (0 if absent) */
++static vm_offset_t
++sm_smem_item(uint16_t remote, uint32_t item, uint32_t *sizep)
++{
++	vm_offset_t toc = sm_smem + SM_SMEM_SZ - 0x1000;
++	if (sm_r32(toc) != SM_TOC_MAGIC) {
++		return 0;
++	}
++	uint32_t n = sm_r32(toc + 8);
++	for (uint32_t i = 0; i < n && i < 32; ++i) {
++		vm_offset_t e = toc + 0x20 + 48 * i;
++		uint32_t off = sm_r32(e), size = sm_r32(e + 4);
++		uint16_t h0 = sm_r16(e + 12), h1 = sm_r16(e + 14);
++		if (!size || !((h0 == 0 && h1 == remote) || (h1 == 0 && h0 == remote))) {
++			continue;
++		}
++		vm_offset_t part = sm_smem + off;
++		if (sm_r32(part) != SM_PRT_MAGIC) {
++			return 0;
++		}
++		vm_offset_t p = part + 0x20, end = part + sm_r32(part + 8 + 4 /* offset_free_uncached */);
++		while (p + 16 <= end && sm_r16(p) == SM_PRIV_CANARY) {
++			uint32_t isz = sm_r32(p + 4);
++			uint16_t pad_data = sm_r16(p + 8), pad_hdr = sm_r16(p + 10);
++			if (sm_r16(p + 2) == item) {
++				if (sizep) {
++					*sizep = isz - pad_data;
++				}
++				return p + 16 + pad_hdr;
++			}
++			p += 16 + pad_hdr + isz;
++		}
++	}
++	return 0;
++}
++
++static void
++sm_smem_dump(void)
++{
++	vm_offset_t toc = sm_smem + SM_SMEM_SZ - 0x1000;
++	printf("SWEET MODEM: toc magic %#x version %#x entries %u\n", sm_r32(toc), sm_r32(toc + 4), sm_r32(toc + 8));
++	if (sm_r32(toc) != SM_TOC_MAGIC) {
++		return;
++	}
++	uint32_t n = sm_r32(toc + 8);
++	for (uint32_t i = 0; i < n && i < 32; ++i) {
++		vm_offset_t e = toc + 0x20 + 48 * i;
++		uint32_t off = sm_r32(e), size = sm_r32(e + 4);
++		uint16_t h0 = sm_r16(e + 12), h1 = sm_r16(e + 14);
++		printf("SWEET MODEM: partition %u: off %#x size %#x hosts %#x/%#x\n", i, off, size, h0, h1);
++		if (!size || !(h0 == 0 || h1 == 0)) {
++			continue;
++		}
++		vm_offset_t part = sm_smem + off;
++		printf("SWEET MODEM:   header magic %#x free_uncached %#x free_cached %#x\n", sm_r32(part), sm_r32(part + 12),
++		    sm_r32(part + 16));
++		if (sm_r32(part) != SM_PRT_MAGIC) {
++			continue;
++		}
++		vm_offset_t p = part + 0x20, end = part + sm_r32(part + 12);
++		unsigned count = 0;
++		while (p + 16 <= end && sm_r16(p) == SM_PRIV_CANARY && count++ < 64) {
++			uint32_t isz = sm_r32(p + 4);
++			uint16_t pad_hdr = sm_r16(p + 10);
++			printf("SWEET MODEM:   item %u size %#x\n", sm_r16(p + 2), isz);
++			p += 16 + pad_hdr + isz;
++		}
++	}
++}
++
 +static void
 +sm_watch(void)
 +{
 +	printf("SWEET MODEM: watch start\n");
-+	/* reuse the already working window (the kernel map is nearly out of address space) */
-+	vm_offset_t smem = sm_window(0);
-+	if (smem) {
-+		sm_pmap_map_bd(smem, SM_SMEM_PA, SM_SMEM_PA + SM_WIN, VM_PROT_READ | VM_PROT_WRITE);
-+		__asm__ volatile("dsb ishst\n\ttlbi vmalle1is\n\tdsb ish\n\tisb" : : : "memory");
-+		sm_win_idx = -1;
-+		printf("SWEET MODEM: smem mapped at %#lx\n", (unsigned long)smem);
-+	}
-+	if (!smem) {
++	/* the window that loaded the firmware, re-pointed at SMEM */
++	sm_smem = sm_window(0);
++	if (!sm_smem) {
 +		printf("SWEET MODEM: cannot map SMEM\n");
 +		return;
 +	}
-+	for (uint32_t off = 0; off < SM_SMEM_SZ; off += 0x10000) {
-+		printf("SWEET MODEM: read smem+%#x ...\n", off);
-+		uint32_t v = *(volatile uint32_t *)(smem + off);
-+		printf("SWEET MODEM: smem+%#x = %#x\n", off, v);
-+	}
-+	printf("SWEET MODEM: smem toc %#x\n", *(volatile uint32_t *)(smem + SM_SMEM_SZ - 0x1000));
-+	uint32_t seen = 0;
-+	for (unsigned sec = 0; sec < 150; ++sec) {
-+		if (sec % 5 == 0) {
-+			volatile uint32_t *w = (volatile uint32_t *)smem;
-+			uint32_t nz = 0;
-+			for (uint32_t i = 0; i < SM_SMEM_SZ / 4; i += 16) {
-+				nz += w[i] != 0;
-+			}
-+			printf("SWEET MODEM: t=%us smem init=%#x free=%#x avail=%#x nonzero=%u toc=%#x\n", sec,
-+			    w[48], w[49], w[50], nz, *(volatile uint32_t *)(smem + SM_SMEM_SZ - 0x1000));
++	sm_pmap_map_bd(sm_smem, SM_SMEM_PA, SM_SMEM_PA + SM_WIN, VM_PROT_READ | VM_PROT_WRITE);
++	__asm__ volatile("dsb ishst\n\ttlbi vmalle1is\n\tdsb ish\n\tisb" : : : "memory");
++	sm_win_idx = -1;
++	printf("SWEET MODEM: smem mapped at %#lx\n", (unsigned long)sm_smem);
++	for (unsigned sec = 0; sec < 150; sec += 5) {
++		printf("SWEET MODEM: t=%us\n", sec);
++		sm_smem_dump();
++		uint32_t size = 0;
++		vm_offset_t smp2p = sm_smem_item(1, 428, &size);
++		if (smp2p) {
++			printf("SWEET MODEM: SMP2P in-item at %#lx size %u magic %#x\n", (unsigned long)(smp2p - sm_smem), size,
++			    sm_r32(smp2p));
 +		}
-+		for (uint32_t off = 0; off + 64 <= SM_SMEM_SZ; off += 4) {
-+			if (*(volatile uint32_t *)(smem + off) != SM_SMP2P_MAGIC) {
-+				continue;
-+			}
-+			uint32_t w1 = *(volatile uint32_t *)(smem + off + 4);
-+			uint32_t w2 = *(volatile uint32_t *)(smem + off + 8);
-+			uint32_t w3 = *(volatile uint32_t *)(smem + off + 12);
-+			uint32_t key = off ^ (w3 << 8);
-+			if (seen == key) {
-+				continue;
-+			}
-+			seen = key;
-+			printf("SWEET MODEM: t=%us SMP2P at smem+%#x ver/feat=%#x pids=%#x entries=%#x\n", sec, off, w1, w2, w3);
-+			uint32_t valid = (w3 >> 16) & 0xffff;
-+			for (uint32_t e = 0; e < valid && e < 16; ++e) {
-+				char name[17];
-+				for (int c = 0; c < 16; ++c) {
-+					name[c] = *(volatile uint8_t *)(smem + off + 20 + 20 * e + c);
-+				}
-+				name[16] = 0;
-+				printf("SWEET MODEM:   entry %u '%s' = %#x\n", e, name, *(volatile uint32_t *)(smem + off + 20 + 20 * e + 16));
-+			}
-+		}
-+		touch_wait(1000);
++		touch_wait(5000);
 +	}
 +	printf("SWEET MODEM: watch done\n");
 +}
