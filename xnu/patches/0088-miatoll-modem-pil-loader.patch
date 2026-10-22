@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..1548962 100644
+index 51c3fd6..289bd95 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..1548962 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1326 @@ sm_probe(void)
+@@ -54,20 +61,1333 @@ sm_probe(void)
  	}
  }
  
@@ -646,6 +646,11 @@ index 51c3fd6..1548962 100644
 +	__asm__ volatile("dsb sy" : : : "memory");
 +	sm_w32(GL_TX_HEAD, head);
 +	sm_kick(SM_IPC_GLINK);
++	static unsigned txlog;
++	if (txlog++ < 30) {
++		printf("SWEET GLINK: tx %u bytes, head -> %u (tail %u) cmd %u\n", hlen + dlen, head, sm_r32(GL_TX_TAIL),
++		    *(const uint16_t *)hdr);
++	}
 +	return 0;
 +}
 +
@@ -829,6 +834,7 @@ index 51c3fd6..1548962 100644
 +		}
 +		case GC_RX_DONE:
 +		case GC_RX_DONE_W_REUSE:
++			printf("SWEET GLINK: rx RX_DONE(%u) cid %u iid %u\n", cmd, p1, p2);
 +			for (int i = 0; i < gl_nrint; ++i) {
 +				if (gl_rintent[i].id == p2) {
 +					gl_rintent[i].used = 0;
@@ -1208,8 +1214,9 @@ index 51c3fd6..1548962 100644
 +			sm_kick(SM_IPC_SMP2P);
 +			sm_kick(SM_IPC_GLINK);
 +		}
-+		if (t == 20 || t == 100) {
-+			sm_smem_dump();
++		if (t % 100 == 50) {
++			printf("SWEET GLINK: t=%u desc tx tail %u head %u rx tail %u head %u\n", t, sm_r32(GL_TX_TAIL),
++			    sm_r32(GL_TX_HEAD), sm_r32(GL_RX_TAIL), sm_r32(GL_RX_HEAD));
 +		}
 +		touch_wait(100);
 +	}
