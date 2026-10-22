@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..73c540e 100644
+index 51c3fd6..7c009a7 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..73c540e 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1460 @@ sm_probe(void)
+@@ -54,20 +61,1760 @@ sm_probe(void)
  	}
  }
  
@@ -139,6 +139,16 @@ index 51c3fd6..73c540e 100644
 +}
 +
 +static int
++sm_pwrite(vnode_t vp, const void *buf, size_t len, off_t off)
++{
++	int resid = 0;
++	vfs_context_t ctx = vfs_context_kernel();
++	int e = vn_rdwr(UIO_WRITE, vp, (caddr_t)(uintptr_t)buf, (int)len, off, UIO_SYSSPACE, IO_NOAUTH | IO_NODELOCKED,
++	    vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++	return e ? e : (resid ? EIO : 0);
++}
++
++static int
 +sm_load_segment(const char *name, uint64_t pa, uint64_t filesz, uint64_t memsz)
 +{
 +	vnode_t vp = NULLVP;
@@ -174,6 +184,8 @@ index 51c3fd6..73c540e 100644
 + */
 +static int sm_std = 1;
 +
++static uint64_t sm_scm_x5;
++
 +static uint64_t
 +sm_scm(unsigned svc, unsigned cmd, uint64_t arginfo, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t *r1)
 +{
@@ -184,7 +196,7 @@ index 51c3fd6..73c540e 100644
 +		register uint64_t x2 __asm__("x2") = a0;
 +		register uint64_t x3 __asm__("x3") = a1;
 +		register uint64_t x4 __asm__("x4") = a2;
-+		register uint64_t x5 __asm__("x5") = 0;
++		register uint64_t x5 __asm__("x5") = sm_scm_x5;
 +		register uint64_t x6 __asm__("x6") = 0;
 +		unsigned resumes = 0;
 +		do {
@@ -701,6 +713,8 @@ index 51c3fd6..73c540e 100644
 +static uint32_t gl_msglen;
 +
 +static void qrtr_rx(const uint8_t *pkt, uint32_t len);
++static void rfs_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen);
++static void rfs_announce(uint32_t node);
 +
 +static void
 +gl_advertise(void)
@@ -878,7 +892,7 @@ index 51c3fd6..73c540e 100644
 +			}
 +			gl_rx_advance(total);
 +			if (left == 0) {
-+				gl_msg(GC_RX_DONE, (uint16_t)GL_LCID, p2);
++				gl_msg(GC_RX_DONE_W_REUSE, (uint16_t)GL_LCID, p2);
 +				qrtr_rx(gl_msgbuf, gl_msglen);
 +				gl_msglen = 0;
 +			}
@@ -930,6 +944,19 @@ index 51c3fd6..73c540e 100644
 +	}
 +	uint32_t h[8];
 +	memcpy(h, pkt, 32);
++	if (h[1] == QRTR_TYPE_DATA && h[7] == 0x4001u && len >= 32) {
++		rfs_request(h[2], h[3], pkt + 32, len - 32);
++		return;
++	}
++	if (h[1] == QRTR_TYPE_NEW_LOOKUP) {
++		/* the modem looks for a service: answer with the one this side offers, then the end marker */
++		uint32_t srv[5] = {QRTR_TYPE_NEW_SERVER, 14u, 1, QRTR_LOCAL_NODE, 0x4001u};
++		uint32_t end[5] = {QRTR_TYPE_NEW_SERVER, 0, 0, 0, 0};
++		printf("SWEET QRTR: lookup from %u:%#x\n", h[2], h[3]);
++		qrtr_send(QRTR_TYPE_DATA, h[2], h[3], QRTR_PORT_CTRL, srv, 20);
++		qrtr_send(QRTR_TYPE_DATA, h[2], h[3], QRTR_PORT_CTRL, end, 20);
++		return;
++	}
 +	if (h[1] == QRTR_TYPE_DATA && h[7] == 0x4000u && h[3] != QRTR_PORT_CTRL) {
 +		/* control answers (NEW_SERVER) arrive as data on our port too */
 +		if (len - 32 == 20) {
@@ -956,6 +983,7 @@ index 51c3fd6..73c540e 100644
 +	printf("SWEET QRTR: rx type %u src %u:%#x dst %u:%#x size %u\n", h[1], h[2], h[3], h[6], h[7], h[5]);
 +	if (h[1] == QRTR_TYPE_HELLO) {
 +		qrtr_remote_node = h[2];
++		rfs_announce(h[2]);
 +	} else if (h[1] == QRTR_TYPE_NEW_SERVER && len >= 32 + 20) {
 +		uint32_t c[5];
 +		memcpy(c, pkt + 32, 20);
@@ -1086,6 +1114,274 @@ index 51c3fd6..73c540e 100644
 +	return NULL;
 +}
 +
++/* ---------------- rmtfs: the modem's remote file system (EFS) over QMI service 14 ----------------
++ * Same protocol as Linux's rmtfs daemon (linux-msm/rmtfs). The files are copies of modemst1/2, fsg and fsc
++ * kept in the iOS root file system (SM_EFS_DIR); the real partitions are never touched. Shared memory for the
++ * data is a piece of the unused ADSP region, handed to the modem with a hypervisor assign call. */
++#define RFS_SERVICE     14u
++#define RFS_PORT        0x4001u
++#define RFS_BUF_PA      0x91200000ULL
++#define RFS_BUF_SZ      0x200000u
++#define RFS_SCR_PA      0x91100000ULL
++#define SM_EFS_DIR      "/private/var/miatoll/efs/"
++#define SM_SVC_MP       0xcu
++#define SM_MP_ASSIGN    0x16u
++
++static vm_offset_t rfs_buf;
++static int rfs_ready;
++static struct { int used; char file[24]; } rfs_caller[8];
++
++static int
++rfs_assign(void)
++{
++	/* scratch structures live in low memory: TZ takes 32-bit addresses */
++	vm_offset_t v = sm_window(0);
++	if (!v) {
++		return ENOMEM;
++	}
++	sm_pmap_map_bd(v, RFS_SCR_PA, RFS_SCR_PA + SM_WIN, VM_PROT_READ | VM_PROT_WRITE);
++	__asm__ volatile("dsb ishst\n\ttlbi vmalle1is\n\tdsb ish\n\tisb" : : : "memory");
++	sm_win_idx = -1;
++	/* mem_prot_info {addr,size} @0, source vm list @0x100, dest list @0x200 (2 x 24 bytes), extra args @0x300 */
++	for (uint32_t i = 0; i < 0x400; i += 4) {
++		sm_w32(v + i, 0);
++	}
++	sm_w32(v + 0, (uint32_t)RFS_BUF_PA);
++	sm_w32(v + 4, (uint32_t)(RFS_BUF_PA >> 32));
++	sm_w32(v + 8, RFS_BUF_SZ);
++	sm_w32(v + 0x100, 3);                       /* VMID_HLOS */
++	sm_w32(v + 0x200, 3);                       /* dest 0: HLOS, read|write */
++	sm_w32(v + 0x204, 6);
++	sm_w32(v + 0x218, 15);                      /* dest 1: MSS_MSA, read|write */
++	sm_w32(v + 0x21c, 6);
++	/* extra argument buffer: args[3..6] = src size, dest phys, dest size, 0 */
++	uint64_t ext[4] = {4, RFS_SCR_PA + 0x200, 48, 0};
++	for (int i = 0; i < 4; ++i) {
++		sm_w32(v + 0x300 + 8 * i, (uint32_t)ext[i]);
++		sm_w32(v + 0x300 + 8 * i + 4, (uint32_t)(ext[i] >> 32));
++	}
++	__asm__ volatile("dsb sy" : : : "memory");
++	sm_scm_x5 = RFS_SCR_PA + 0x300;
++	uint64_t r1 = 0;
++	uint64_t r0 = sm_scm(SM_SVC_MP, SM_MP_ASSIGN, 0x1117u, RFS_SCR_PA, 16, RFS_SCR_PA + 0x100, &r1);
++	sm_scm_x5 = 0;
++	printf("SWEET RFS: assign shared memory to the modem: x0=%#llx x1=%#llx\n", r0, r1);
++	return (r0 || r1) ? EIO : 0;
++}
++
++static const char *
++rfs_map_path(const char *path)
++{
++	if (!strcmp(path, "/boot/modem_fs1")) {
++		return "modemst1.img";
++	}
++	if (!strcmp(path, "/boot/modem_fs2")) {
++		return "modemst2.img";
++	}
++	if (!strcmp(path, "/boot/modem_fsg")) {
++		return "fsg.img";
++	}
++	if (!strcmp(path, "/boot/modem_fsc")) {
++		return "fsc.img";
++	}
++	return NULL;
++}
++
++static int
++rfs_file_open(const char *name, vnode_t *vpp)
++{
++	char path[96];
++	snprintf(path, sizeof(path), "%s%s", SM_EFS_DIR, name);
++	return vnode_lookup(path, 0, vpp, vfs_context_kernel());
++}
++
++static void
++rfs_reply(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, uint32_t err, const uint8_t *extra, uint16_t xlen, uint8_t xtag)
++{
++	uint8_t m[64];
++	uint16_t blen = (uint16_t)(7 + (xlen ? xlen + 3 : 0));
++	uint16_t l4 = 4, result = err ? 1 : 0, error = (uint16_t)err;
++	m[0] = 2;
++	memcpy(m + 1, &txn, 2);
++	memcpy(m + 3, &msg, 2);
++	memcpy(m + 5, &blen, 2);
++	m[7] = 0x02;
++	memcpy(m + 8, &l4, 2);
++	memcpy(m + 10, &result, 2);
++	memcpy(m + 12, &error, 2);
++	if (xlen) {
++		m[14] = xtag;
++		memcpy(m + 15, &xlen, 2);
++		memcpy(m + 17, extra, xlen);
++	}
++	qrtr_send(QRTR_TYPE_DATA, node, port, RFS_PORT, m, 7u + blen);
++}
++
++static int
++rfs_mem_rw(uint64_t pa, void *buf, uint32_t n, int write)
++{
++	if (pa < RFS_BUF_PA || pa + n > RFS_BUF_PA + RFS_BUF_SZ || !rfs_buf) {
++		return EINVAL;
++	}
++	vm_offset_t a = rfs_buf + (pa - RFS_BUF_PA);
++	uint8_t *b = buf;
++	for (uint32_t i = 0; i < n; ++i) {
++		if (write) {
++			*(volatile uint8_t *)(a + i) = b[i];
++		} else {
++			b[i] = *(volatile uint8_t *)(a + i);
++		}
++	}
++	return 0;
++}
++
++static void
++rfs_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
++{
++	if (qlen < 7 || q[0] != 0) {
++		return;
++	}
++	uint16_t txn, msg, blen;
++	memcpy(&txn, q + 1, 2);
++	memcpy(&msg, q + 3, 2);
++	memcpy(&blen, q + 5, 2);
++	const uint8_t *b = q + 7;
++	if (blen > qlen - 7) {
++		blen = (uint16_t)(qlen - 7);
++	}
++	uint16_t tl;
++	static unsigned logged;
++	switch (msg) {
++	case 1: {                                            /* open */
++		const uint8_t *p = qmi_find(b, blen, 0x01, &tl);
++		char path[64] = {0};
++		if (p && tl >= 2) {
++			uint16_t n;
++			memcpy(&n, p, 2);
++			if (n > 63) {
++				n = 63;
++			}
++			memcpy(path, p + 2, n);
++		}
++		const char *file = rfs_map_path(path);
++		uint32_t id = 0;
++		if (file) {
++			for (int i = 0; i < 8; ++i) {
++				if (!rfs_caller[i].used) {
++					rfs_caller[i].used = 1;
++					strlcpy(rfs_caller[i].file, file, sizeof(rfs_caller[i].file));
++					id = (uint32_t)i + 1;
++					break;
++				}
++			}
++		}
++		printf("SWEET RFS: open '%s' -> file %s caller %u\n", path, file ? file : "(none)", id);
++		if (id) {
++			rfs_reply(node, port, txn, msg, 0, (const uint8_t *)&id, 4, 0x10);
++		} else {
++			rfs_reply(node, port, txn, msg, 1, NULL, 0, 0);
++		}
++		break;
++	}
++	case 2: {                                            /* close */
++		const uint8_t *p = qmi_find(b, blen, 0x01, &tl);
++		uint32_t id = (p && tl >= 4) ? *(const uint32_t *)p : 0;
++		if (id >= 1 && id <= 8) {
++			rfs_caller[id - 1].used = 0;
++		}
++		printf("SWEET RFS: close %u\n", id);
++		rfs_reply(node, port, txn, msg, 0, NULL, 0, 0);
++		break;
++	}
++	case 4: {                                            /* alloc buffer */
++		const uint8_t *p = qmi_find(b, blen, 0x02, &tl);
++		uint32_t sz = (p && tl >= 4) ? *(const uint32_t *)p : 0;
++		uint64_t addr = RFS_BUF_PA;
++		printf("SWEET RFS: alloc %u bytes -> %#llx\n", sz, addr);
++		if (sz <= RFS_BUF_SZ) {
++			rfs_reply(node, port, txn, msg, 0, (const uint8_t *)&addr, 8, 0x10);
++		} else {
++			rfs_reply(node, port, txn, msg, 1, NULL, 0, 0);
++		}
++		break;
++	}
++	case 5: {                                            /* get device error */
++		uint8_t st = 0;
++		rfs_reply(node, port, txn, msg, 0, &st, 1, 0x10);
++		break;
++	}
++	case 3: {                                            /* read/write iovec */
++		const uint8_t *pc = qmi_find(b, blen, 0x01, &tl);
++		uint32_t id = (pc && tl >= 4) ? *(const uint32_t *)pc : 0;
++		const uint8_t *pd = qmi_find(b, blen, 0x02, &tl);
++		uint8_t write = (pd && tl >= 1) ? pd[0] : 0;
++		const uint8_t *pv = qmi_find(b, blen, 0x03, &tl);
++		uint32_t err = 0;
++		vnode_t vp = NULLVP;
++		if (id < 1 || id > 8 || !rfs_caller[id - 1].used || !pv || tl < 1 || rfs_file_open(rfs_caller[id - 1].file, &vp)) {
++			err = 1;
++		} else {
++			uint32_t cnt = pv[0];
++			static uint8_t sec[512];
++			for (uint32_t i = 0; i < cnt && !err && 1 + 12 * (i + 1) <= tl; ++i) {
++				uint32_t sa, po, ns;
++				memcpy(&sa, pv + 1 + 12 * i, 4);
++				memcpy(&po, pv + 5 + 12 * i, 4);
++				memcpy(&ns, pv + 9 + 12 * i, 4);
++				if (logged++ < 40) {
++					printf("SWEET RFS: %s caller %u sector %u x%u at %#x\n", write ? "write" : "read", id, sa, ns, po);
++				}
++				for (uint32_t j = 0; j < ns && !err; ++j) {
++					uint64_t pa = (po >= RFS_BUF_PA ? (uint64_t)po : RFS_BUF_PA + po) + 512ULL * j;
++					off_t fo = (off_t)(sa + j) * 512;
++					if (write) {
++						err = rfs_mem_rw(pa, sec, 512, 0) ? 1 : (sm_pwrite(vp, sec, 512, fo) ? 1 : 0);
++					} else {
++						memset(sec, 0, 512);
++						(void)sm_pread(vp, sec, 512, fo);
++						err = rfs_mem_rw(pa, sec, 512, 1) ? 1 : 0;
++					}
++				}
++			}
++		}
++		if (vp != NULLVP) {
++			vnode_put(vp);
++		}
++		rfs_reply(node, port, txn, msg, err, NULL, 0, 0);
++		break;
++	}
++	default:
++		printf("SWEET RFS: unknown message %#x\n", msg);
++		rfs_reply(node, port, txn, msg, 1, NULL, 0, 0);
++	}
++}
++
++/* announce the service to the modem's name service (and answer its lookups the same way) */
++static void
++rfs_announce(uint32_t node)
++{
++	uint32_t srv[5] = {QRTR_TYPE_NEW_SERVER, RFS_SERVICE, 1, QRTR_LOCAL_NODE, RFS_PORT};
++	qrtr_send(QRTR_TYPE_NEW_SERVER, node, QRTR_PORT_CTRL, QRTR_PORT_CTRL, srv, 20);
++}
++
++static void
++rfs_start(void)
++{
++	if (rfs_ready) {
++		return;
++	}
++	rfs_buf = ml_io_map(RFS_BUF_PA, RFS_BUF_SZ);
++	if (!rfs_buf) {
++		printf("SWEET RFS: cannot map the shared buffer\n");
++		rfs_ready = -1;
++		return;
++	}
++	if (rfs_assign()) {
++		printf("SWEET RFS: continuing without the assign\n");
++	}
++	rfs_ready = 1;
++}
++
 +static int
 +qmi_result(const char *what, const uint8_t *r, uint32_t rlen)
 +{
@@ -1212,6 +1508,9 @@ index 51c3fd6..73c540e 100644
 +		if (gl_started) {
 +			gl_poll();
 +			qrtr_start();
++			if (qrtr_hello_sent && (t % 20) == 0 && t < 1000) {
++				rfs_announce(qrtr_remote_node == QRTR_BCAST ? 0 : qrtr_remote_node);
++			}
 +			static int wlfw_done;
 +			if (qrtr_have_wlfw && !wlfw_done) {
 +				wlfw_done = 1;
@@ -1409,6 +1708,7 @@ index 51c3fd6..73c540e 100644
 +	(void)PE_parse_boot_argn("sweetmodemstd", &sm_std, sizeof(sm_std));
 +	(void)PE_parse_boot_argn("sweetmodemboot", &boot, sizeof(boot));
 +	if (boot) {
++		rfs_start();
 +		int r = sm_boot();
 +		printf("SWEET MODEM: boot result %d\n", r);
 +		if (!r) {
