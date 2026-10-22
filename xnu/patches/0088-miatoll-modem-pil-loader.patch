@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..86724fd 100644
+index 51c3fd6..29e85cd 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..86724fd 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1104 @@ sm_probe(void)
+@@ -54,20 +61,1309 @@ sm_probe(void)
  	}
  }
  
@@ -895,12 +895,16 @@ index 51c3fd6..86724fd 100644
 +#define QRTR_LOCAL_NODE     1u
 +#define QRTR_BCAST          0xffffffffu
 +
++static uint8_t qmi_rsp[4096];
++static uint32_t qmi_rsp_len;
++static int qmi_rsp_ready;
++
 +static uint32_t qrtr_remote_node = QRTR_BCAST, qrtr_wlfw_node, qrtr_wlfw_port, qrtr_have_wlfw, qrtr_hello_sent;
 +
 +static int
 +qrtr_send(uint32_t type, uint32_t dst_node, uint32_t dst_port, uint32_t src_port, const void *payload, uint32_t plen)
 +{
-+	uint8_t pkt[256];
++	static uint8_t pkt[8192];
 +	uint32_t h[8] = {1u, type, QRTR_LOCAL_NODE, src_port, 0, plen, dst_node, dst_port};
 +	if (plen > sizeof(pkt) - 32) {
 +		return EINVAL;
@@ -920,6 +924,29 @@ index 51c3fd6..86724fd 100644
 +	}
 +	uint32_t h[8];
 +	memcpy(h, pkt, 32);
++	if (h[1] == QRTR_TYPE_DATA && h[7] == 0x4000u && h[3] != QRTR_PORT_CTRL) {
++		/* control answers (NEW_SERVER) arrive as data on our port too */
++		if (len - 32 == 20) {
++			uint32_t c[5];
++			memcpy(c, pkt + 32, 20);
++			if (c[0] == QRTR_TYPE_NEW_SERVER) {
++				printf("SWEET QRTR: server service %#x instance %#x node %u port %#x\n", c[1], c[2], c[3], c[4]);
++				if (c[1] == 0x45) {
++					qrtr_have_wlfw = 1;
++					qrtr_wlfw_node = c[3];
++					qrtr_wlfw_port = c[4];
++				}
++				return;
++			}
++		}
++		printf("SWEET QRTR: rx data %u bytes from %u:%#x\n", len - 32, h[2], h[3]);
++		/* QMI message for our client port */
++		uint32_t n = len - 32 < sizeof(qmi_rsp) ? len - 32 : sizeof(qmi_rsp);
++		memcpy(qmi_rsp, pkt + 32, n);
++		qmi_rsp_len = n;
++		qmi_rsp_ready = 1;
++		return;
++	}
 +	printf("SWEET QRTR: rx type %u src %u:%#x dst %u:%#x size %u\n", h[1], h[2], h[3], h[6], h[7], h[5]);
 +	if (h[1] == QRTR_TYPE_HELLO) {
 +		qrtr_remote_node = h[2];
@@ -937,9 +964,17 @@ index 51c3fd6..86724fd 100644
 +	}
 +}
 +
++static unsigned qrtr_lookup_tries;
++
 +static void
 +qrtr_start(void)
 +{
++	if (qrtr_hello_sent && !qrtr_have_wlfw && (++qrtr_lookup_tries % 100) == 0 && qrtr_lookup_tries < 1500) {
++		uint32_t lookup[5] = {QRTR_TYPE_NEW_LOOKUP, 0, 0, 0, 0};
++		uint32_t node = qrtr_remote_node == QRTR_BCAST ? 0 : qrtr_remote_node;
++		qrtr_send(QRTR_TYPE_NEW_LOOKUP, node, QRTR_PORT_CTRL, 0x4000, lookup, 20);
++		printf("SWEET QRTR: NEW_LOOKUP again to node %u\n", node);
++	}
 +	/* HELLO to everyone, then ask the remote name service for all servers */
 +	if (!qrtr_hello_sent && gl_open_local && gl_open_remote && gl_nrint) {
 +		uint32_t hello[1] = {0};
@@ -951,6 +986,171 @@ index 51c3fd6..86724fd 100644
 +				qrtr_hello_sent = 1;
 +				printf("SWEET QRTR: NEW_LOOKUP sent\n");
 +			}
++		}
++	}
++}
++
++/* ---------------- QMI client for the WLAN firmware service (WLFW, service 0x45) ---------------- */
++#define WLFW_SERVICE            0x45
++#define WLFW_IND_REGISTER       0x20
++#define WLFW_MSA_INFO           0x2d
++#define WLFW_MSA_READY          0x2e
++#define WLFW_CAP                0x24
++#define WLFW_CLIENT_ID          0x4b4e454cu
++#define WLFW_MSA_PA             0x93900000ULL
++#define WLFW_MSA_SZ             0x200000u
++
++static uint16_t qmi_txn_id;
++
++static uint32_t
++qmi_tlv(uint8_t *b, uint32_t off, uint8_t tag, const void *val, uint16_t len)
++{
++	b[off] = tag;
++	memcpy(b + off + 1, &len, 2);
++	if (len) {
++		memcpy(b + off + 3, val, len);
++	}
++	return off + 3 + len;
++}
++
++/* send one QMI request to WLFW and poll for its response; returns the response TLV area or NULL */
++static const uint8_t *
++qmi_call(uint16_t msg_id, const uint8_t *tlvs, uint16_t tlen, uint32_t *rlen, unsigned timeout_ms)
++{
++	static uint8_t m[2048];
++	uint16_t txn = ++qmi_txn_id;
++	m[0] = 0;                               /* request */
++	memcpy(m + 1, &txn, 2);
++	memcpy(m + 3, &msg_id, 2);
++	memcpy(m + 5, &tlen, 2);
++	if (tlen) {
++		memcpy(m + 7, tlvs, tlen);
++	}
++	qmi_rsp_ready = 0;
++	for (unsigned tries = 0; tries < 50; ++tries) {
++		if (!qrtr_send(QRTR_TYPE_DATA, qrtr_wlfw_node, qrtr_wlfw_port, 0x4000, m, 7 + tlen)) {
++			break;
++		}
++		gl_poll();
++		touch_wait(20);
++	}
++	for (unsigned t = 0; t < timeout_ms / 10; ++t) {
++		gl_poll();
++		if (qmi_rsp_ready) {
++			qmi_rsp_ready = 0;
++			uint16_t rid, rl;
++			memcpy(&rid, qmi_rsp + 3, 2);
++			memcpy(&rl, qmi_rsp + 5, 2);
++			if (qmi_rsp[0] != 2 || rid != msg_id) {
++				continue;       /* an indication or somebody else's answer */
++			}
++			*rlen = rl;
++			return qmi_rsp + 7;
++		}
++		touch_wait(10);
++	}
++	return NULL;
++}
++
++/* find TLV `tag` in a message body */
++static const uint8_t *
++qmi_find(const uint8_t *b, uint32_t len, uint8_t tag, uint16_t *tl)
++{
++	uint32_t o = 0;
++	while (o + 3 <= len) {
++		uint16_t l;
++		memcpy(&l, b + o + 1, 2);
++		if (o + 3 + l > len) {
++			break;
++		}
++		if (b[o] == tag) {
++			*tl = l;
++			return b + o + 3;
++		}
++		o += 3 + l;
++	}
++	return NULL;
++}
++
++static int
++qmi_result(const char *what, const uint8_t *r, uint32_t rlen)
++{
++	uint16_t l = 0;
++	const uint8_t *res = r ? qmi_find(r, rlen, 0x02, &l) : NULL;
++	if (!res || l < 4) {
++		printf("SWEET WLFW: %s: no response\n", what);
++		return ETIMEDOUT;
++	}
++	uint16_t result, error;
++	memcpy(&result, res, 2);
++	memcpy(&error, res + 2, 2);
++	printf("SWEET WLFW: %s: result %u error %#x\n", what, result, error);
++	return result ? EIO : 0;
++}
++
++static void
++wlfw_bringup(void)
++{
++	static uint8_t t[256];
++	uint32_t rl = 0, o = 0;
++	const uint8_t *r;
++	uint8_t one = 1;
++	uint32_t cid = WLFW_CLIENT_ID;
++
++	o = qmi_tlv(t, o, 0x10, &one, 1);
++	o = qmi_tlv(t, o, 0x13, &one, 1);
++	o = qmi_tlv(t, o, 0x14, &one, 1);
++	o = qmi_tlv(t, o, 0x15, &cid, 4);
++	r = qmi_call(WLFW_IND_REGISTER, t, (uint16_t)o, &rl, 3000);
++	if (qmi_result("ind_register", r, rl)) {
++		return;
++	}
++
++	uint64_t pa = WLFW_MSA_PA;
++	uint32_t sz = WLFW_MSA_SZ;
++	o = qmi_tlv(t, 0, 0x01, &pa, 8);
++	o = qmi_tlv(t, o, 0x02, &sz, 4);
++	r = qmi_call(WLFW_MSA_INFO, t, (uint16_t)o, &rl, 3000);
++	if (qmi_result("msa_info", r, rl)) {
++		return;
++	}
++	uint16_t tl;
++	const uint8_t *reg = qmi_find(r, rl, 0x03, &tl);
++	if (reg && tl >= 1) {
++		printf("SWEET WLFW: msa regions %u, tlv %u bytes\n", reg[0], tl);
++		for (uint32_t i = 0; i < reg[0] && 1 + 13 * (i + 1) <= tl; ++i) {
++			uint64_t a;
++			uint32_t zs;
++			memcpy(&a, reg + 1 + 13 * i, 8);
++			memcpy(&zs, reg + 9 + 13 * i, 4);
++			printf("SWEET WLFW:   region %u: addr %#llx size %#x secure %u\n", i, a, zs, reg[13 + 13 * i]);
++		}
++	}
++
++	r = qmi_call(WLFW_MSA_READY, t, 0, &rl, 5000);
++	qmi_result("msa_ready", r, rl);
++
++	r = qmi_call(WLFW_CAP, t, 0, &rl, 5000);
++	if (!qmi_result("cap", r, rl)) {
++		uint16_t l;
++		const uint8_t *ci = qmi_find(r, rl, 0x10, &l);
++		if (ci && l >= 8) {
++			uint32_t id, fam;
++			memcpy(&id, ci, 4);
++			memcpy(&fam, ci + 4, 4);
++			printf("SWEET WLFW: chip id %#x family %#x\n", id, fam);
++		}
++		const uint8_t *bi = qmi_find(r, rl, 0x11, &l);
++		if (bi && l >= 4) {
++			uint32_t b;
++			memcpy(&b, bi, 4);
++			printf("SWEET WLFW: board id %#x\n", b);
++		}
++		const uint8_t *fw = qmi_find(r, rl, 0x13, &l);
++		if (fw && l >= 4) {
++			uint32_t v;
++			memcpy(&v, fw, 4);
++			printf("SWEET WLFW: fw version %#x\n", v);
 +		}
 +	}
 +}
@@ -981,6 +1181,11 @@ index 51c3fd6..86724fd 100644
 +		if (gl_started) {
 +			gl_poll();
 +			qrtr_start();
++			static int wlfw_done;
++			if (qrtr_have_wlfw && !wlfw_done) {
++				wlfw_done = 1;
++				wlfw_bringup();
++			}
 +		}
 +		if (t % 50 == 49) {
 +			sm_kick(SM_IPC_SMP2P);
