@@ -1,0 +1,32 @@
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -4,7 +4,8 @@
+ void
+ sweet_early_mark(unsigned int stage, const char *label)
+ {
+-	if (early_disabled || stage > 8) {
++	/* the boot screen shows the logo: these progress marks only appear when a panic is being drawn */
++	if (early_disabled || stage > 8 || !early_panicking) {
+ 		return;
+ 	}
+ 	uint32_t color = 0xff00ff00u | (stage * 28u << 16);
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -2,6 +2,7 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern void sweet_hid_key(int key, int down);
++extern int sweet_console_muted;
+ void sweet_keys_init(void);
+ 
+ #define KEYS_CORE_PA     0x0c440000u
+@@ -42,6 +43,9 @@
+ 				printf("SWEET KEYS: key=%d down=%d pon=%#x gpio4:c110=%#x\n",
+ 				    k, state[k], pon, gpio);
+ 				sweet_hid_key(k, state[k]);
++				if (k != 0 && state[k]) {
++					sweet_console_muted = 0;    /* a volume key shows the boot log again */
++				}
+ 			}
+ 		}
+ 		keys_wait();

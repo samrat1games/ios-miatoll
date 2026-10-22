@@ -113,5 +113,12 @@ void con_logo(void)
 			line[x] = 0xff000000U | (a << 16) | (a << 8) | a;
 		}
 	}
+	for (int y = 0; y < LOGO2_H; y++) {
+		volatile uint32_t *line = con_fb + (LOGO2_Y + y) * (FB_STRIDE / 4) + LOGO2_X;
+		for (int x = 0; x < LOGO2_W; x++) {
+			uint32_t a = logo2_alpha[y * LOGO2_W + x];
+			line[x] = 0xff000000U | (a << 16) | (a << 8) | a;
+		}
+	}
 	quiet = 1;
 }

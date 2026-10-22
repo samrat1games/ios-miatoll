@@ -17,6 +17,11 @@ def centered(text, f, cy):
     d.text(((W - (b[2] - b[0])) // 2 - b[0], cy - (b[3] - b[1]) // 2 - b[1]), text, font=f, fill=255)
 centered('Powered by', small, 1114)
 centered('iOS', big, 1262)
+credit = Image.new('L', (W, H), 0)
+d2 = ImageDraw.Draw(credit)
+f2 = font(46, 500)
+b2 = d2.textbbox((0, 0), 'By Samrat', font=f2)
+d2.text(((W - (b2[2] - b2[0])) // 2 - b2[0], 2240 - b2[1]), 'By Samrat', font=f2, fill=170)
 bb = img.getbbox()
 x0, y0, x1, y1 = bb[0] & ~7, bb[1], (bb[2] + 7) & ~7, bb[3]
 crop = img.crop((x0, y0, x1, y1))
@@ -28,6 +33,16 @@ out.write('static const unsigned char logo_alpha[LOGO_W * LOGO_H] = {\n')
 for i in range(0, len(px), 32):
     out.write(','.join(str(v) for v in px[i:i + 32]) + ',\n')
 out.write('};\n')
+cb = credit.getbbox()
+cx0, cy0, cx1, cy1 = cb[0] & ~7, cb[1], (cb[2] + 7) & ~7, cb[3]
+cc = credit.crop((cx0, cy0, cx1, cy1))
+cpx = list(cc.get_flattened_data()) if hasattr(cc, "get_flattened_data") else list(cc.getdata())
+out.write('#define LOGO2_X %d\n#define LOGO2_Y %d\n#define LOGO2_W %d\n#define LOGO2_H %d\n' % (cx0, cy0, cc.size[0], cc.size[1]))
+out.write('static const unsigned char logo2_alpha[LOGO2_W * LOGO2_H] = {\n')
+for i in range(0, len(cpx), 32):
+    out.write(','.join(str(v) for v in cpx[i:i + 32]) + ',\n')
+out.write('};\n')
+out.close()
 crop.save('/tmp/logo-preview.png')
 if len(sys.argv) > 2:   # run-length encoded copy for the kernel: (count 1..255, value) pairs
     rle, i = [], 0
