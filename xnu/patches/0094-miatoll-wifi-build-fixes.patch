@@ -1,0 +1,39 @@
+diff --git a/bsd/dev/miatoll_wifi.c b/bsd/dev/miatoll_wifi.c
+index 860524c..028b31c 100644
+--- a/bsd/dev/miatoll_wifi.c
++++ b/bsd/dev/miatoll_wifi.c
+@@ -5,6 +5,7 @@
+  * There is no radio involved. When the cable or the computer is not there, frames are dropped.
+  */
+ #include <kern/locks.h>
++#include <kern/sched_prim.h>
+ #include <kern/thread.h>
+ #include <libkern/libkern.h>
+ #include <net/if.h>
+@@ -20,6 +21,9 @@
+ #include <sys/sockio.h>
+ #include <sys/systm.h>
+ 
++extern kern_return_t thread_terminate(thread_t);
++extern errno_t proto_plumb(protocol_family_t, ifnet_t);
++
+ #define FK_SSID "Miatoll via PC"
+ 
+ /* the USB side sets this when its endpoints are up; NULL: no cable, frames are dropped */
+diff --git a/bsd/dev/redwood_sta.c b/bsd/dev/redwood_sta.c
+index cbba127..82e1cdb 100644
+--- a/bsd/dev/redwood_sta.c
++++ b/bsd/dev/redwood_sta.c
+@@ -34,6 +34,12 @@
+ extern void thread_set_thread_name(thread_t thread, const char *name);
+ 
+ #define HEARD_MOST      128
++
++static void
++redwood_wifi_tell(const char *what)
++{
++	printf("%s", what);
++}
+ #define CHANNELS_MOST   96
+ 
+ static LCK_GRP_DECLARE(sta_lock_group, "redwood-sta");
