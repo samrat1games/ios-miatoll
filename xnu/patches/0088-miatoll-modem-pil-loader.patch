@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..c85ff12 100644
+index 51c3fd6..73c540e 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..c85ff12 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1453 @@ sm_probe(void)
+@@ -54,20 +61,1460 @@ sm_probe(void)
  	}
  }
  
@@ -1425,9 +1425,14 @@ index 51c3fd6..c85ff12 100644
 +{
 +	/* the two places the Android kernel leaves "reboot bootloader" for the boot chain: IMEM restart reason
 +	 * and PM6150 PON_SOFT_RB_SPARE (reason 2 << 2) */
-+	vm_offset_t imem = ml_io_map(0x146aa000ULL, 0x1000);
++	printf("SWEET RESET: start\n");
++	vm_offset_t imem = sm_window(0);
 +	if (imem) {
-+		sm_w32(imem + 0x65c, 0x77665500u);
++		sm_pmap_map_bd(imem, 0x146a8000ULL, 0x146a8000ULL + 0x4000, VM_PROT_READ | VM_PROT_WRITE);
++		__asm__ volatile("dsb ishst\n\ttlbi vmalle1is\n\tdsb ish\n\tisb" : : : "memory");
++		sm_win_idx = -1;
++		sm_w32(imem + 0x2000 + 0x65c, 0x77665500u);
++		printf("SWEET RESET: imem restart reason set\n");
 +	}
 +	if (!sp_init()) {
 +		uint16_t apid = sp_find_apid(0x008);
@@ -1449,6 +1454,7 @@ index 51c3fd6..c85ff12 100644
 +sm_bl_thread(void *arg, wait_result_t result)
 +{
 +	(void)result;
++	printf("SWEET RESET: armed for %u s\n", (unsigned)(uintptr_t)arg);
 +	touch_wait((unsigned)(uintptr_t)arg * 1000u);
 +	sweet_reboot_bootloader();
 +}
@@ -1462,6 +1468,7 @@ index 51c3fd6..c85ff12 100644
 +	sm_rtc_sync();
 +	int bl = 0;
 +	(void)PE_parse_boot_argn("sweetbl", &bl, sizeof(bl));
++	printf("SWEET RESET: sweetbl=%d\n", bl);
 +	if (bl > 0) {
 +		thread_t bt;
 +		if (kernel_thread_start(sm_bl_thread, (void *)(uintptr_t)bl, &bt) == KERN_SUCCESS) {
