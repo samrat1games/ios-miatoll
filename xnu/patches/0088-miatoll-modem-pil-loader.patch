@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..0b2bc61 100644
+index 51c3fd6..c85ff12 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..0b2bc61 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1411 @@ sm_probe(void)
+@@ -54,20 +61,1453 @@ sm_probe(void)
  	}
  }
  
@@ -1419,6 +1419,40 @@ index 51c3fd6..0b2bc61 100644
  	thread_block(THREAD_CONTINUE_NULL);
  }
  
++/* ---- test aid: boot-arg sweetbl=<seconds> restarts into the bootloader (fastboot) after that long ---- */
++static void
++sweet_reboot_bootloader(void)
++{
++	/* the two places the Android kernel leaves "reboot bootloader" for the boot chain: IMEM restart reason
++	 * and PM6150 PON_SOFT_RB_SPARE (reason 2 << 2) */
++	vm_offset_t imem = ml_io_map(0x146aa000ULL, 0x1000);
++	if (imem) {
++		sm_w32(imem + 0x65c, 0x77665500u);
++	}
++	if (!sp_init()) {
++		uint16_t apid = sp_find_apid(0x008);
++		uint8_t old = 0;
++		if (apid != SP_NO_APID && !sp_read(apid, 0x8f, &old)) {
++			int e = sp_write(apid, 0x8f, (old & 3u) | (2u << 2), 1);
++			printf("SWEET RESET: PON spare %#x -> %#x (%d)\n", old, (old & 3u) | (2u << 2), e);
++		}
++	}
++	printf("SWEET RESET: restarting into the bootloader\n");
++	touch_wait(300);
++	sm_smc(0x84000009ULL, 0, 0, 0, 0, NULL, NULL, NULL);       /* PSCI SYSTEM_RESET */
++	for (;;) {
++		__asm__ volatile("wfe");
++	}
++}
++
++static void
++sm_bl_thread(void *arg, wait_result_t result)
++{
++	(void)result;
++	touch_wait((unsigned)(uintptr_t)arg * 1000u);
++	sweet_reboot_bootloader();
++}
++
 +extern void sweet_logo_show(void);
 +
  static void
@@ -1426,6 +1460,14 @@ index 51c3fd6..0b2bc61 100644
  {
 +	sweet_logo_show();
 +	sm_rtc_sync();
++	int bl = 0;
++	(void)PE_parse_boot_argn("sweetbl", &bl, sizeof(bl));
++	if (bl > 0) {
++		thread_t bt;
++		if (kernel_thread_start(sm_bl_thread, (void *)(uintptr_t)bl, &bt) == KERN_SUCCESS) {
++			thread_deallocate(bt);
++		}
++	}
  	int enabled = 1;
  	thread_t thread;
  	(void)PE_parse_boot_argn("sweetmodem", &enabled, sizeof(enabled));
