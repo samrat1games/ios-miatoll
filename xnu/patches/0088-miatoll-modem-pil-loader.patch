@@ -1,12 +1,13 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..ef4e800 100644
+index 51c3fd6..8666847 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
-@@ -4,6 +4,12 @@
+@@ -4,6 +4,13 @@
   * peripheral-image-loader (PIL, svc 2) calls the Linux subsys-pil-tz driver uses for the modem (pas-id 4)?
   * Boot-arg sweetmodem=0 disables the probe.
   */
 +#include <sys/vnode_internal.h>
++#include <sys/sysctl.h>
 +#include <sys/kauth.h>
 +#include <sys/namei.h>
 +#include <vm/pmap.h>
@@ -15,7 +16,7 @@ index 51c3fd6..ef4e800 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +60,444 @@ sm_probe(void)
+@@ -54,20 +61,692 @@ sm_probe(void)
  	}
  }
  
@@ -315,7 +316,7 @@ index 51c3fd6..ef4e800 100644
 + */
 +#define SM_TOC_MAGIC    0x434f5424u     /* "$TOC" */
 +#define SM_PRT_MAGIC    0x54525024u     /* "$PRT" */
-+#define SM_PRIV_CANARY  0x4153u
++#define SM_PRIV_CANARY  0xa5a5u
 +#define SM_HOST_GLOBAL  0xfffeu
 +
 +static vm_offset_t sm_smem;
@@ -402,6 +403,155 @@ index 51c3fd6..ef4e800 100644
 +	}
 +}
 +
++static inline void
++sm_w32(vm_offset_t a, uint32_t v)
++{
++	*(volatile uint32_t *)a = v;
++}
++
++static inline void
++sm_w16(vm_offset_t a, uint16_t v)
++{
++	*(volatile uint16_t *)a = v;
++}
++
++/* partition shared by the AP and `remote`, 0 if none */
++static vm_offset_t
++sm_smem_partition(uint16_t remote)
++{
++	vm_offset_t toc = sm_smem + SM_SMEM_SZ - 0x1000;
++	if (sm_r32(toc) != SM_TOC_MAGIC) {
++		return 0;
++	}
++	uint32_t n = sm_r32(toc + 8);
++	for (uint32_t i = 0; i < n && i < 32; ++i) {
++		vm_offset_t e = toc + 0x20 + 48 * i;
++		uint16_t h0 = sm_r16(e + 12), h1 = sm_r16(e + 14);
++		if (sm_r32(e + 4) && ((h0 == 0 && h1 == remote) || (h1 == 0 && h0 == remote))) {
++			return sm_smem + sm_r32(e);
++		}
++	}
++	return 0;
++}
++
++/* allocate an item (zeroed by the caller) at the end of the uncached area; no hardware lock (single writer here) */
++static vm_offset_t
++sm_smem_alloc(uint16_t remote, uint32_t item, uint32_t size)
++{
++	vm_offset_t part = sm_smem_partition(remote);
++	if (!part || sm_r32(part) != SM_PRT_MAGIC) {
++		return 0;
++	}
++	uint32_t asz = (size + 7) & ~7u;
++	uint32_t freeoff = sm_r32(part + 12);
++	if (freeoff + 16 + asz > sm_r32(part + 16)) {
++		return 0;
++	}
++	vm_offset_t p = part + freeoff;
++	sm_w16(p, SM_PRIV_CANARY);
++	sm_w16(p + 2, (uint16_t)item);
++	sm_w32(p + 4, asz);
++	sm_w16(p + 8, (uint16_t)(asz - size));
++	sm_w16(p + 10, 0);
++	sm_w32(p + 12, 0);
++	for (uint32_t i = 0; i < asz; i += 4) {
++		sm_w32(p + 16 + i, 0);
++	}
++	__asm__ volatile("dsb sy" : : : "memory");
++	sm_w32(part + 12, freeoff + 16 + asz);
++	__asm__ volatile("dsb sy" : : : "memory");
++	return p + 16;
++}
++
++/* ---- SMP2P (see Linux drivers/soc/qcom/smp2p.c): item 428 modem->AP, 435 AP->modem ---- */
++#define SM_APCS_PA      0x17c00000ULL
++#define SM_APCS_IPC     0x0cu
++#define SM_IPC_SMP2P    14u
++#define SM_IPC_GLINK    12u
++#define SM_SMP2P_IN     428u
++#define SM_SMP2P_OUT    435u
++
++static vm_offset_t sm_apcs;
++
++static void
++sm_kick(unsigned bit)
++{
++	if (sm_apcs) {
++		__asm__ volatile("dsb sy" : : : "memory");
++		sm_w32(sm_apcs + SM_APCS_IPC, 1u << bit);
++	}
++}
++
++static vm_offset_t sm_p2p_out, sm_p2p_in;
++
++static void
++sm_smp2p_setup(void)
++{
++	sm_p2p_out = sm_smem_item(1, SM_SMP2P_OUT, NULL);
++	if (!sm_p2p_out) {
++		sm_p2p_out = sm_smem_alloc(1, SM_SMP2P_OUT, 340);
++		if (!sm_p2p_out) {
++			printf("SWEET MODEM: smp2p out item alloc failed\n");
++			return;
++		}
++		sm_w32(sm_p2p_out, 0x504d5324u);
++		sm_w32(sm_p2p_out + 4, 1u << 8);                    /* features = SSR_ACK, version 0 (not yet valid) */
++		sm_w16(sm_p2p_out + 8, 0);                          /* local pid */
++		sm_w16(sm_p2p_out + 10, 1);                         /* remote pid */
++		sm_w16(sm_p2p_out + 12, 16);                        /* total entries */
++		sm_w16(sm_p2p_out + 14, 1);                         /* valid entries: master-kernel */
++		static const char nm[16] = "master-kernel";
++		for (int i = 0; i < 16; i += 4) {
++			uint32_t w;
++			memcpy(&w, nm + i, 4);
++			sm_w32(sm_p2p_out + 20 + i, w);
++		}
++		__asm__ volatile("dsb sy" : : : "memory");
++		sm_w32(sm_p2p_out + 4, 1u | (1u << 8));             /* version 1 validates the item */
++		printf("SWEET MODEM: smp2p out item created at smem+%#lx\n", (unsigned long)(sm_p2p_out - sm_smem));
++	}
++	sm_kick(SM_IPC_SMP2P);
++}
++
++static void
++sm_smp2p_poll(void)
++{
++	if (!sm_p2p_in) {
++		sm_p2p_in = sm_smem_item(1, SM_SMP2P_IN, NULL);
++		if (sm_p2p_in) {
++			printf("SWEET MODEM: smp2p in item at smem+%#lx magic %#x\n", (unsigned long)(sm_p2p_in - sm_smem), sm_r32(sm_p2p_in));
++		}
++	}
++	if (!sm_p2p_in) {
++		return;
++	}
++	static uint32_t last[16];
++	static uint32_t last_hdr[3];
++	uint32_t hdr[3] = {sm_r32(sm_p2p_in + 4), sm_r32(sm_p2p_in + 12), sm_r32(sm_p2p_in + 16)};
++	if (memcmp(hdr, last_hdr, sizeof(hdr))) {
++		memcpy(last_hdr, hdr, sizeof(hdr));
++		printf("SWEET MODEM: smp2p in: ver/feat %#x total/valid %#x flags %#x\n", hdr[0], hdr[1], hdr[2]);
++		/* negotiation: both sides on version 1; acknowledge a modem restart */
++		if ((hdr[0] & 0xff) == 1 && (hdr[2] & 1)) {
++			sm_w32(sm_p2p_out + 16, sm_r32(sm_p2p_out + 16) | 2u);
++		}
++		sm_kick(SM_IPC_SMP2P);
++	}
++	uint32_t valid = (hdr[1] >> 16) & 0xffff;
++	for (uint32_t e = 0; e < valid && e < 16; ++e) {
++		uint32_t v = sm_r32(sm_p2p_in + 20 + 20 * e + 16);
++		if (v != last[e]) {
++			char name[17];
++			for (int c = 0; c < 16; ++c) {
++				name[c] = *(volatile uint8_t *)(sm_p2p_in + 20 + 20 * e + c);
++			}
++			name[16] = 0;
++			last[e] = v;
++			printf("SWEET MODEM: smp2p in '%s' = %#x\n", name, v);
++		}
++	}
++}
++
 +static void
 +sm_watch(void)
 +{
@@ -415,20 +565,119 @@ index 51c3fd6..ef4e800 100644
 +	sm_pmap_map_bd(sm_smem, SM_SMEM_PA, SM_SMEM_PA + SM_WIN, VM_PROT_READ | VM_PROT_WRITE);
 +	__asm__ volatile("dsb ishst\n\ttlbi vmalle1is\n\tdsb ish\n\tisb" : : : "memory");
 +	sm_win_idx = -1;
-+	printf("SWEET MODEM: smem mapped at %#lx\n", (unsigned long)sm_smem);
-+	for (unsigned sec = 0; sec < 150; sec += 5) {
-+		printf("SWEET MODEM: t=%us\n", sec);
-+		sm_smem_dump();
-+		uint32_t size = 0;
-+		vm_offset_t smp2p = sm_smem_item(1, 428, &size);
-+		if (smp2p) {
-+			printf("SWEET MODEM: SMP2P in-item at %#lx size %u magic %#x\n", (unsigned long)(smp2p - sm_smem), size,
-+			    sm_r32(smp2p));
++	sm_apcs = ml_io_map(SM_APCS_PA, 0x1000);
++	printf("SWEET MODEM: smem mapped at %#lx, apcs %#lx\n", (unsigned long)sm_smem, (unsigned long)sm_apcs);
++	sm_smem_dump();
++	sm_smp2p_setup();
++	for (unsigned t = 0; t < 600; ++t) {
++		sm_smp2p_poll();
++		if (t % 10 == 9) {
++			sm_kick(SM_IPC_SMP2P);
 +		}
-+		touch_wait(5000);
++		if (t == 20 || t == 100) {
++			sm_smem_dump();
++		}
++		touch_wait(250);
 +	}
 +	printf("SWEET MODEM: watch done\n");
 +}
++
++/* ---- backlight: PM6150L WLED5 modulator A through the SPMI arbiter (writes need the apps-owned channel) ---- */
++#define SP_CORE_PA      0x0c440000ULL
++#define SP_CNFG_PA      0x0c40a000ULL
++#define SP_CHNL_PA      0x0e400000ULL
++#define SP_NO_APID      0xffffu
++
++static vm_offset_t sp_core, sp_cnfg, sp_chnl;
++static uint16_t sp_wled_apid = SP_NO_APID;
++
++static uint16_t
++sp_find_apid(uint16_t ppid)
++{
++	uint16_t found = SP_NO_APID;
++	for (uint32_t i = 0; i < 512; ++i) {
++		uint32_t map = sm_r32(sp_core + 0x900u + 4u * i);
++		if (map == 0 || ((map >> 8) & 0xfffu) != ppid) {
++			continue;
++		}
++		uint32_t owner = sm_r32(sp_cnfg + 0x700u + 4u * i) & 7u;
++		if (found == SP_NO_APID || owner == 0) {
++			found = (uint16_t)i;
++		}
++	}
++	return found;
++}
++
++static int
++sp_write(uint16_t apid, uint8_t addr, uint32_t data, unsigned n)
++{
++	vm_offset_t ch = sp_chnl + 0x80u * apid;
++	sm_w32(ch + 0x10, data);
++	__asm__ volatile("dsb sy" : : : "memory");
++	sm_w32(ch, ((uint32_t)addr << 4) | (n - 1));      /* EXT_WRITEL */
++	for (unsigned i = 0; i < 2000; ++i) {
++		uint32_t st = sm_r32(ch + 0x08);
++		if (st & 1u) {
++			return (st & 0xeu) ? (int)st : 0;
++		}
++		delay(10);
++	}
++	return -1;
++}
++
++static int
++sm_bl_apply(unsigned level)
++{
++	if (!sp_chnl) {
++		sp_core = ml_io_map(SP_CORE_PA, 0x2000);
++		sp_cnfg = ml_io_map(SP_CNFG_PA, 0x1000);
++		sp_chnl = ml_io_map(SP_CHNL_PA, 0x10000);
++		if (!sp_core || !sp_cnfg || !sp_chnl) {
++			return ENOMEM;
++		}
++		sp_wled_apid = sp_find_apid(0x5d9);
++		if (sp_wled_apid == SP_NO_APID) {
++			sp_wled_apid = sp_find_apid(0x4d9);
++		}
++		printf("SWEET BL: WLED sink apid %#x\n", sp_wled_apid);
++	}
++	if (sp_wled_apid == SP_NO_APID) {
++		return ENODEV;
++	}
++	int e = sp_write(sp_wled_apid, 0x53, (level & 0xff) | (((level >> 8) & 0xf) << 8), 2);
++	if (!e) {
++		e = sp_write(sp_wled_apid, 0x65, 1, 1);
++	}
++	if (!e) {
++		e = sp_write(sp_wled_apid, 0x65, 0, 1);
++	}
++	printf("SWEET BL: level %u -> %d\n", level, e);
++	return e ? EIO : 0;
++}
++
++static int sm_bl_level = 1072;
++
++static int
++sm_bl_sysctl SYSCTL_HANDLER_ARGS
++{
++#pragma unused(arg1, arg2)
++	int v = sm_bl_level;
++	int err = sysctl_handle_int(oidp, &v, 0, req);
++	if (!err && req->newptr) {
++		if (v < 1) {
++			v = 1;
++		}
++		if (v > 4095) {
++			v = 4095;
++		}
++		sm_bl_level = v;
++		err = sm_bl_apply((unsigned)v);
++	}
++	return err;
++}
++
++SYSCTL_PROC(_hw, OID_AUTO, sweet_brightness, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sm_bl_sysctl, "I",
++    "panel backlight 1..4095");
 +
  static void
  sm_thread(void *arg, wait_result_t result)
