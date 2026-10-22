@@ -11,7 +11,7 @@ until [ "$(gh run view "$rid" --json status -q .status)" = completed ]; do sleep
 rm -rf /tmp/kdl
 for i in 1 2 3; do gh run download "$rid" -n xnu-kernel -D /tmp/kdl && break; sleep 5; done
 cp /tmp/kdl/kernel.development.sweet xnu/out/
-B="debug=0xc serial=3 cpus=8 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_hz=30 sweetfb_noconsole=1 sweetusb=2"
+B="debug=0xc serial=3 cpus=8 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_hz=60 sweetfb_noconsole=1 sweetusb=2"
 python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/miatoll.adt "shim/out/payload-$name.bin" --cmdline "$B" >/dev/null
 (cd shim && ./build.sh "../shim/out/payload-$name.bin" >/dev/null 2>&1 && cp out/shim-boot.img "out/shim-boot-$name.img")
 echo "built shim/out/shim-boot-$name.img"
