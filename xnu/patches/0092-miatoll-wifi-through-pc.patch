@@ -1,6 +1,8 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 6630131..75409a7 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -1,5 +1,9 @@
+@@ -111,6 +111,10 @@ bsd/dev/sweet_touch.c			standard
  bsd/dev/sweet_rpmh.c			standard
  bsd/dev/sweet_spmi.c			standard
  bsd/dev/sweet_usb.c			standard
@@ -10,14 +12,7 @@
 +bsd/dev/miatoll_wifi.c			standard
  bsd/dev/mem.c				standard
  bsd/dev/munge.c 			optional config_requires_u32_munging
---- a/iokit/conf/files.arm64
-+++ b/iokit/conf/files.arm64
-@@ -1,4 +1,5 @@
- iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
- iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
-+iokit/Kernel/arm/RedwoodWLAN.cpp                                 optional iokitcpp
- iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
- iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
+ bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
 index b6c1a41..b74df03 100644
 --- a/bsd/dev/sweet_usb.c
@@ -254,6 +249,18 @@ index b6c1a41..b74df03 100644
  		thread_deallocate(thread);
  	}
  }
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index acc9ae0..7fd1ade 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -16,6 +16,7 @@ iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitc
+ iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
+ iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
++iokit/Kernel/arm/RedwoodWLAN.cpp                                 optional iokitcpp
+ iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
 diff --git a/bsd/dev/redwood_net.c b/bsd/dev/redwood_net.c
 new file mode 100644
 index 0000000..1111111
