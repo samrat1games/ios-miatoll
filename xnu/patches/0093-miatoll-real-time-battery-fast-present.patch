@@ -1,0 +1,592 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index bc13581..69bcb12 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1690,7 +1690,106 @@ sp_read(uint16_t apid, uint8_t addr, uint8_t *out)
+ 	return ETIMEDOUT;
+ }
+ 
+-/* PM6150 RTC (SID 0, PID 0x60): seconds since the epoch, kept by the PMIC across reboots */
++/*
++ * Real time. The PM6150 RTC (SID 0, PID 0x60) is a 32-bit seconds counter that keeps running across reboots (and
++ * with the phone off). Android never writes wall-clock time into it, so a fresh phone holds an arbitrary counter.
++ *   - Counter already above SM_RTC_REAL_MIN: it holds real UTC, used as it is.
++ *   - Otherwise calendar = counter + offset, where the offset is the boot-arg sweetrtc=<offset> (sweetnow=<unix
++ *     time at flashing> works it out once and prints it) or, with neither, SM_RTC_FLOOR (the day this port was
++ *     built: certificates and file dates are at least roughly right until the network time arrives).
++ * A watcher thread notices when userland sets the clock (network time, or Settings > Date & Time) and writes
++ * that time into the PMIC counter, so every later boot starts with the right time and no boot-arg at all. If the
++ * PMIC refuses the write the offset is kept in RAM only (read back after every write: nothing is assumed).
++ */
++#define SM_RTC_FLOOR    1792627200ULL   /* 2026-10-22 00:00:00 UTC */
++#define SM_RTC_REAL_MIN 1767225600ULL   /* 2026-01-01 00:00:00 UTC */
++#define SM_RTC_SLACK    8               /* seconds of drift between the system clock and the counter that are ignored */
++
++static uint16_t sm_rtc_apid = SP_NO_APID;
++static int64_t sm_rtc_off;              /* calendar = counter + sm_rtc_off */
++static int sm_rtc_write_fails;
++static int sm_rtc_chan;
++
++static int
++sm_rtc_read(uint16_t apid, uint32_t *secs)
++{
++	uint8_t v[4], again = 0;
++	for (unsigned tries = 0; tries < 3; ++tries) {
++		for (unsigned i = 0; i < 4; ++i) {
++			if (sp_read(apid, 0x48 + i, &v[i])) {
++				return EIO;
++			}
++		}
++		/* the low byte can roll over between the four reads: read it again and retry if it went backwards */
++		if (sp_read(apid, 0x48, &again) == 0 && again >= v[0]) {
++			break;
++		}
++	}
++	*secs = v[0] | (v[1] << 8) | (v[2] << 16) | ((uint32_t)v[3] << 24);
++	return 0;
++}
++
++/* RTC_WRITE 0x40..0x43, RTC_CTRL 0x46 (bit 7 = enable); same sequence as Linux qpnp-rtc: stop, byte 0 = 0, bytes
++ * 1-3, byte 0, start. The counter is always started again, whatever happened in between. */
++static int
++sm_rtc_write(uint16_t apid, uint32_t secs)
++{
++	uint8_t ctrl = 0;
++	if (sp_read(apid, 0x46, &ctrl) || sp_write(apid, 0x46, ctrl & 0x7fu, 1)) {
++		return EIO;
++	}
++	int e = sp_write(apid, 0x40, 0, 1);
++	if (!e) {
++		e = sp_write(apid, 0x41, secs >> 8, 3);
++	}
++	if (!e) {
++		e = sp_write(apid, 0x40, secs & 0xffu, 1);
++	}
++	(void)sp_write(apid, 0x46, ctrl | 0x80u, 1);
++	return e ? EIO : 0;
++}
++
++static void
++sm_rtc_thread(void *arg, wait_result_t result)
++{
++	(void)arg;
++	(void)result;
++	for (;;) {
++		uint64_t deadline;
++		clock_interval_to_deadline(15 * 1000u, NSEC_PER_MSEC, &deadline);
++		(void)assert_wait_deadline(&sm_rtc_chan, THREAD_UNINT, deadline);
++		thread_block(THREAD_CONTINUE_NULL);
++
++		uint32_t secs;
++		clock_sec_t now;
++		clock_usec_t usec;
++		if (sm_rtc_read(sm_rtc_apid, &secs)) {
++			continue;
++		}
++		clock_get_calendar_microtime(&now, &usec);
++		int64_t diff = (int64_t)now - ((int64_t)secs + sm_rtc_off);
++		if (diff > -SM_RTC_SLACK && diff < SM_RTC_SLACK) {
++			continue;
++		}
++		/* somebody set the system clock: keep that time */
++		sm_rtc_off += diff;
++		if (sm_rtc_write_fails >= 3 || now < SM_RTC_REAL_MIN) {
++			continue;
++		}
++		uint32_t back = 0;
++		if (sm_rtc_write(sm_rtc_apid, (uint32_t)now) == 0 && sm_rtc_read(sm_rtc_apid, &back) == 0 &&
++		    back + 3 >= (uint32_t)now && back <= (uint32_t)now + 3) {
++			sm_rtc_off = (int64_t)now - (int64_t)back;
++			sm_rtc_write_fails = 0;
++			printf("SWEET RTC: PMIC counter now holds %u (clock changed by %lld s)\n", back, (long long)diff);
++		} else {
++			sm_rtc_write_fails++;
++			printf("SWEET RTC: PMIC write refused (read back %u, wanted %u), time kept in RAM only\n", back,
++			    (uint32_t)now);
++		}
++	}
++}
++
+ static void
+ sm_rtc_sync(void)
+ {
+@@ -1702,33 +1801,33 @@ sm_rtc_sync(void)
+ 		printf("SWEET RTC: no apid for the RTC\n");
+ 		return;
+ 	}
+-	uint8_t v[4], again = 0;
+-	for (unsigned tries = 0; tries < 3; ++tries) {
+-		for (unsigned i = 0; i < 4; ++i) {
+-			if (sp_read(apid, 0x48 + i, &v[i])) {
+-				printf("SWEET RTC: read failed\n");
+-				return;
+-			}
+-		}
+-		if (sp_read(apid, 0x48, &again) == 0 && again >= v[0]) {
+-			break;
+-		}
++	uint32_t secs;
++	if (sm_rtc_read(apid, &secs)) {
++		printf("SWEET RTC: read failed\n");
++		return;
+ 	}
+-	uint32_t secs = v[0] | (v[1] << 8) | (v[2] << 16) | ((uint32_t)v[3] << 24);
+ 	printf("SWEET RTC: PMIC seconds %u\n", secs);
+-	/* The PMIC counter is not wall-clock time: boot-arg sweetrtc=<offset> turns it into one (calendar = counter +
+-	 * offset); sweetnow=<unix time at flashing> works the offset out for the first time (about 15 s after the flash
+-	 * command) and prints it, to be kept as sweetrtc. */
+ 	uint64_t off = 0, now = 0;
+-	if (PE_parse_boot_argn("sweetnow", &now, sizeof(now)) && now > 1735689600ULL) {
++	if (secs >= SM_RTC_REAL_MIN) {
++		off = 0;
++	} else if (PE_parse_boot_argn("sweetnow", &now, sizeof(now)) && now > SM_RTC_REAL_MIN) {
+ 		off = now + 15 - secs;
+ 		printf("SWEET RTC: offset %llu (use boot-arg sweetrtc=%llu)\n", off, off);
+-	} else if (!PE_parse_boot_argn("sweetrtc", &off, sizeof(off))) {
+-		off = 0;
+-	}
+-	if (off) {
+-		clock_set_calendar_microtime((clock_sec_t)(secs + off), 0);
+-		printf("SWEET RTC: system time set to %llu\n", (unsigned long long)secs + off);
++	} else if (!PE_parse_boot_argn("sweetrtc", &off, sizeof(off)) || off == 0) {
++		off = SM_RTC_FLOOR - secs;
++	}
++	sm_rtc_off = (int64_t)off;
++	uint64_t cal = (uint64_t)secs + off;
++	if (cal < SM_RTC_FLOOR) {
++		sm_rtc_off += (int64_t)(SM_RTC_FLOOR - cal);
++		cal = SM_RTC_FLOOR;
++	}
++	clock_set_calendar_microtime((clock_sec_t)cal, 0);
++	printf("SWEET RTC: system time set to %llu\n", (unsigned long long)cal);
++	sm_rtc_apid = apid;
++	thread_t th;
++	if (kernel_thread_start(sm_rtc_thread, NULL, &th) == KERN_SUCCESS) {
++		thread_deallocate(th);
+ 	}
+ }
+ 
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 9969739..56ba52c 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -1,8 +1,13 @@
+ /*
+- * Built-in iOS battery bring-up service. Default: 100%, AC, not charging.
+- * sweetbattery=1: read-only PM6150 polling every 30 seconds; voltage-derived
+- * SOC is an UNCALIBRATED estimate, not a replacement for the Linux QG algo.
+- * See report.md for binary evidence, register provenance and integration.
++ * Built-in iOS battery service. Read-only PM6150 polling every 10 seconds:
++ * the real battery voltage/current and the real charger state (cable plugged,
++ * charging, full). The percentage is the battery's own open-circuit-voltage
++ * curve (qcom,pc-temp-v1-lut of the 5020 mAh profile in the stock device tree,
++ * 25 C column), with the voltage drop over the cell's internal resistance
++ * taken out using the measured current, then smoothed (it only moves one step
++ * per poll, never down while charging). It is an estimate, not the Linux QG
++ * coulomb-counter algorithm. boot-arg sweetbattery=0 returns the static
++ * "100%, AC, not charging" source.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <device/device_types.h> /* io_buf_ptr_t for private OSKext headers */
+@@ -28,6 +33,9 @@ private:
+ 	IOTimerEventSource *fTimer;
+ 	bool fTimerAdded, fRunning, fReal;
+ 	int fLastMode;
++	unsigned fShown;        /* percentage shown so far, 0 = no sample yet */
++	unsigned fPolls;
++	unsigned fLastKey;
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+ 	void publish(unsigned percent, unsigned mv, int ma, bool external,
+@@ -37,6 +45,7 @@ private:
+ 	static IOReturn stopPolling(OSObject *owner, void *, void *, void *, void *);
+ 	static bool readWord(unsigned address, uint16_t *value);
+ 	static unsigned estimatePercent(unsigned mv);
++	unsigned smooth(unsigned target, bool charging);
+ };
+ OSDefineMetaClassAndStructors(SweetBattery, IOPMPowerSource);
+ 
+@@ -72,6 +81,9 @@ SweetBattery::init(OSDictionary *dictionary)
+ 		}
+ 	}
+ 	fLastMode = -1;
++	fShown = 0;
++	fPolls = 0;
++	fLastKey = 0xffffffffu;
+ 	return true;
+ }
+ 
+@@ -186,37 +198,53 @@ SweetBattery::readWord(unsigned address, uint16_t *value)
+ unsigned
+ SweetBattery::estimatePercent(unsigned mv)
+ {
+-	/* Generic single-cell curve, intentionally NOT advertised as QG SOC.
+-	 * Load sag, temperature, aging and charging introduce large errors. */
+-	static const unsigned volts[] = {3400, 3500, 3600, 3700, 3800, 3900,
+-	    4000, 4100, 4200, 4350};
+-	static const unsigned soc[] = {1, 5, 10, 20, 40, 60, 75, 85, 93, 100};
++	/* Open-circuit voltage (mV) -> percent, 25 C, from the stock profile
++	 * "4278534_Sunwoda_5020mAH" (qcom,pc-temp-v1-lut); the other 5020 mAh
++	 * profiles of this phone differ by less than 1 percent. */
++	static const uint16_t volts[] = {3000, 3361, 3489, 3570, 3673, 3703, 3710, 3734, 3764, 3786, 3802, 3812,
++	    3822, 3835, 3850, 3867, 3888, 3926, 3971, 4011, 4048, 4090, 4134, 4181, 4230, 4280, 4329, 4371, 4413, 4435};
++	static const uint8_t soc[] = {0, 1, 2, 3, 5, 7, 10, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62, 66, 70,
++	    74, 78, 82, 86, 90, 94, 98, 100};
++	const unsigned n = sizeof(volts) / sizeof(volts[0]);
+ 	if (mv <= volts[0]) {
+ 		return soc[0];
+ 	}
+-	for (unsigned i = 1; i < sizeof(volts) / sizeof(volts[0]); ++i) {
++	for (unsigned i = 1; i < n; ++i) {
+ 		if (mv < volts[i]) {
+-			return soc[i - 1] + (mv - volts[i - 1]) * (soc[i] - soc[i - 1]) /
+-			       (volts[i] - volts[i - 1]);
++			return soc[i - 1] + (mv - volts[i - 1]) * (soc[i] - soc[i - 1]) / (volts[i] - volts[i - 1]);
+ 		}
+ 	}
+ 	return 100;
+ }
+ 
++/* A battery percentage that jumps with every load spike looks broken: move one step per poll, and only in the
++ * direction the cable says (down on battery, up on the charger) unless the estimate is clearly elsewhere. */
++unsigned
++SweetBattery::smooth(unsigned target, bool charging)
++{
++	if (fShown == 0) {
++		fShown = target ? target : 1;
++		return fShown;
++	}
++	if (target > fShown) {
++		if (charging || target >= fShown + 3) {
++			fShown++;
++		}
++	} else if (target < fShown && !charging) {
++		fShown--;
++	}
++	return fShown;
++}
++
+ void
+ SweetBattery::poll(void)
+ {
+-	uint8_t type, present, usb, path, charger, error, temperature;
+-	uint16_t rawVoltage;
++	uint8_t type = 0, present = 0, usb = 0, path = 0, charger = 0, error = 0, temperature = 0;
++	uint16_t rawVoltage = 0;
+ 	bool valid = fReal &&
+ 	    !sweet_spmi_read(0, 0x4804, &type) && type == 0x0d &&
+ 	    !sweet_spmi_read(0, 0x4808, &present) && (present & 1u) &&
+-	    readWord(0x48c0, &rawVoltage) && rawVoltage != 0x8000 &&
+-	    !sweet_spmi_read(0, 0x1310, &usb) &&
+-	    !sweet_spmi_read(0, 0x110b, &path) &&
+-	    !sweet_spmi_read(0, 0x1006, &charger) &&
+-	    !sweet_spmi_read(0, 0x1007, &error) &&
+-	    !sweet_spmi_read(0, 0x100d, &temperature);
++	    readWord(0x48c0, &rawVoltage) && rawVoltage != 0x8000;
+ 	unsigned mv = valid ? (unsigned)(((uint64_t)rawVoltage * 194637u) / 1000000u) : 0;
+ 	/* Zero, reset, floating, or implausible data cannot become 0% battery. */
+ 	valid = valid && mv >= 2800 && mv <= 4600;
+@@ -224,6 +252,22 @@ SweetBattery::poll(void)
+ 		publish(100, 4200, 0, true, true, false, true, false, false);
+ 		return;
+ 	}
++	/* The charger registers are optional: a failed read means "not plugged", never an invalid battery. */
++	if (sweet_spmi_read(0, 0x1310, &usb)) {
++		usb = 0;
++	}
++	if (sweet_spmi_read(0, 0x110b, &path)) {
++		path = 0;
++	}
++	if (sweet_spmi_read(0, 0x1006, &charger)) {
++		charger = 0;
++	}
++	if (sweet_spmi_read(0, 0x1007, &error)) {
++		error = 0;
++	}
++	if (sweet_spmi_read(0, 0x100d, &temperature)) {
++		temperature = 0;
++	}
+ 	bool external = (usb & 0x10u) != 0;
+ 	bool capable = external && (path & 0x10u) && (path & 1u) && !(path & 0x40u);
+ 	unsigned state = charger & 7u;
+@@ -242,8 +286,27 @@ SweetBattery::poll(void)
+ 		/* Linux: negative=charging; IOPMPowerSource: positive=charging, mA. */
+ 		ma = (int)(-((int64_t)signedRaw * (subtype == 3 ? 152588 : 305176)) / 1000000);
+ 	}
+-	publish(full ? 100 : estimatePercent(mv), mv, ma, external, capable,
+-	    charging, full, true, currentValid);
++	/* Terminal voltage -> open-circuit voltage: take out I * R (about 100 milliohm for the cell and its flex;
++	 * without a current reading assume a typical 1.2 A charge / 0.4 A load). */
++	int drop = currentValid ? ma / 10 : (charging ? 120 : -40);
++	int ocv = (int)mv - drop;
++	if (ocv < 2800) {
++		ocv = 2800;
++	}
++	unsigned percent = full ? 100 : smooth(estimatePercent((unsigned)ocv), charging);
++	if (full) {
++		fShown = 100;
++	}
++	if (fShown > 100) {
++		fShown = 100;
++	}
++	unsigned key = (percent << 2) | (external ? 2u : 0) | (charging ? 1u : 0);
++	if (key != fLastKey || (++fPolls % 30) == 0) {
++		IOLog("SWEET BATTERY: raw %umV %dmA(valid %d) usb %#x path %#x chg %#x err %#x temp %#x -> %u%% ocv %dmV\n",
++		    mv, ma, currentValid, usb, path, charger, error, temperature, percent, ocv);
++		fLastKey = key;
++	}
++	publish(percent, mv, ma, external, capable, charging, full, true, currentValid);
+ }
+ 
+ void
+@@ -252,7 +315,7 @@ SweetBattery::timerFired(OSObject *owner, IOTimerEventSource *sender)
+ 	SweetBattery *self = OSDynamicCast(SweetBattery, owner);
+ 	if (self && self->fRunning) {
+ 		self->poll();
+-		sender->setTimeoutMS(30000);
++		sender->setTimeoutMS(10000);
+ 	}
+ }
+ 
+@@ -262,7 +325,7 @@ SweetBattery::start(IOService *provider)
+ 	if (!IOPMPowerSource::start(provider)) {
+ 		return false;
+ 	}
+-	int real = 0;
++	int real = 1;
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+ 	fReal = real == 1 && sweet_spmi_init() == 0;
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
+@@ -273,7 +336,7 @@ SweetBattery::start(IOService *provider)
+ 		if (fLoop && fTimer && fLoop->addEventSource(fTimer) == kIOReturnSuccess) {
+ 			fTimerAdded = true;
+ 			fRunning = true;
+-			fTimer->setTimeoutMS(30000);
++			fTimer->setTimeoutMS(10000);
+ 		} else {
+ 			fReal = false;
+ 			poll();
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 9f165db..30de756 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -25,7 +25,10 @@
+  * Everything else is accepted and logged once.
+  *
+  * SwapEnd copies the enabled layers' surfaces into the panel memory (no
+- * scaling, CPU copy). Vsync (notification type 5) is a 60 Hz timer that
++ * scaling, CPU copy). The panel memory is write-combined (slow to write, much
++ * slower to read), so a cached shadow copy of what the panel holds is kept and
++ * only the pixels that really changed are written (most frames change a small
++ * part of the screen). Vsync (notification type 5) is a 60 Hz timer that
+  * sends (count, mach_absolute_time, 0) as 32-bit halves to clients that
+  * enabled it, through the port they registered (IOConnectSetNotificationPort).
+  *
+@@ -117,12 +120,19 @@ public:
+ 	bool          fPowerOff;      /* RequestPowerChange(0) */
+ 	uint32_t      fFadeStep;      /* fade-out steps done while off */
+ 	volatile uint32_t fPresentedSwap; /* last swap id copied to the panel (SwapWait back-pressure) */
++	uint8_t      *fShadow;        /* cached copy of the panel memory (fRowBytes * fHeight), NULL = off */
++	size_t        fShadowSize;
++	bool          fShadowValid;   /* fShadow mirrors the panel */
++	bool          fShadowOff;     /* a layer drew into the panel memory directly: the shadow cannot be trusted */
++	uint64_t      fVsyncAbs;      /* one vsync period in mach absolute time units */
++	uint64_t      fNextVsync;     /* ideal time of the next vsync */
+ 
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 	void addClient(IOMobileFramebufferUserClient *client);
+ 	void removeClient(IOMobileFramebufferUserClient *client);
+ 	void swap(const uint8_t *rec);
+ 	void present(const uint8_t *rec);
++	void rearm(IOTimerEventSource *sender);
+ };
+ 
+ OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
+@@ -193,9 +203,20 @@ AppleCLCD::start(IOService *provider)
+ 		IOLog("SWEET FB: no vsync timer\n");
+ 		return false;
+ 	}
+-	uint32_t hz = 10;
++	uint32_t hz = 60;
+ 	PE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));
+ 	fFlushTicks = (hz == 0 || hz >= 60) ? 1 : 60 / hz;
++	int noshadow = 0;
++	PE_parse_boot_argn("sweetfb_noshadow", &noshadow, sizeof(noshadow));
++	fShadowSize = (size_t)fRowBytes * fHeight;
++	if (!noshadow) {
++		fShadow = (uint8_t *)IOMallocData(fShadowSize);
++	}
++	if (fShadow == NULL) {
++		fShadowSize = 0;
++	}
++	nanoseconds_to_absolutetime((uint64_t)SWEET_FB_VSYNC_US * 1000ULL, &fVsyncAbs);
++	fNextVsync = mach_absolute_time() + fVsyncAbs;
+ 	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
+ 
+ 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
+@@ -211,7 +232,9 @@ void
+ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ {
+ 	AppleCLCD *fb = (AppleCLCD *)owner;
+-	uint64_t now = mach_absolute_time();
++	/* The vsync time handed out is the ideal one (steady 60 Hz), not when this thread got to run: CoreAnimation
++	 * paces its animations from it, and a jittery value shows up as stutter. */
++	uint64_t now = fb->fNextVsync;
+ 	uint64_t count = ++fb->fVsyncCount;
+ 	uint64_t values[6] = {
+ 		(uint32_t)count, (uint32_t)(count >> 32),
+@@ -238,8 +261,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 			for (uint32_t y = 0; y < fb->fHeight; y++) {
+ 				memset((void *)(fb->fPixels + (uint64_t)y * fb->fRowBytes), 0, (size_t)fb->fWidth * 4);
+ 			}
++			fb->fShadowValid = false;       /* the panel was written behind the shadow's back */
+ 		}
+-		sender->setTimeoutUS(SWEET_FB_VSYNC_US);
++		fb->rearm(sender);
+ 		return;
+ 	}
+ 	bool flush = fb->fDirty && (count % fb->fFlushTicks) == 0;
+@@ -259,7 +283,24 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 		fb->fPresentedSwap = sid;
+ 		IOFreeData(rec, SWEET_FB_SWAP_REC_SIZE);
+ 	}
+-	sender->setTimeoutUS(SWEET_FB_VSYNC_US);
++	fb->rearm(sender);
++}
++
++/* Next vsync one period after the ideal time of this one (no drift by the time the work took); if the work
++ * took longer than a period, skip the missed ticks instead of firing a burst. */
++void
++AppleCLCD::rearm(IOTimerEventSource *sender)
++{
++	uint64_t now = mach_absolute_time();
++	uint64_t next = fNextVsync + fVsyncAbs;
++	if (next <= now) {
++		next = now + fVsyncAbs;
++	}
++	fNextVsync = next;
++	uint64_t ns;
++	absolutetime_to_nanoseconds(next - now, &ns);
++	uint32_t us = (uint32_t)(ns / 1000ULL);
++	sender->setTimeoutUS(us < 500 ? 500 : us);
+ }
+ 
+ void
+@@ -289,6 +330,60 @@ get32(const uint8_t *p, uint32_t off)
+ 	return v;
+ }
+ 
++static inline uint64_t
++sweet_fb_ld64(const uint8_t *p)
++{
++	uint64_t v;
++	memcpy(&v, p, sizeof(v));
++	return v;
++}
++
++/*
++ * Bring `bytes` bytes of one panel row up to date from `src`: only the span between the first and the last 8-byte
++ * word that differs from `shadow` (what the panel holds) is written, to the shadow first and then from the shadow
++ * to the panel, so both always get the same bytes even if the source surface is being drawn into meanwhile.
++ */
++static void
++sweet_fb_row(uint8_t *dst, const uint8_t *src, uint8_t *shadow, size_t bytes)
++{
++	const size_t bulk = bytes & ~(size_t)7;
++	const size_t tail = bytes - bulk;
++	size_t lo = 0, hi;
++
++	while (lo + 32 <= bulk &&
++	    ((sweet_fb_ld64(src + lo) ^ sweet_fb_ld64(shadow + lo)) |
++	    (sweet_fb_ld64(src + lo + 8) ^ sweet_fb_ld64(shadow + lo + 8)) |
++	    (sweet_fb_ld64(src + lo + 16) ^ sweet_fb_ld64(shadow + lo + 16)) |
++	    (sweet_fb_ld64(src + lo + 24) ^ sweet_fb_ld64(shadow + lo + 24))) == 0) {
++		lo += 32;
++	}
++	while (lo < bulk && sweet_fb_ld64(src + lo) == sweet_fb_ld64(shadow + lo)) {
++		lo += 8;
++	}
++	if (lo == bulk) {
++		if (tail == 0 || memcmp(src + bulk, shadow + bulk, tail) == 0) {
++			return;
++		}
++		hi = bytes;
++	} else if (tail != 0 && memcmp(src + bulk, shadow + bulk, tail) != 0) {
++		hi = bytes;
++	} else {
++		hi = bulk;
++		while (hi >= lo + 32 &&
++		    ((sweet_fb_ld64(src + hi - 8) ^ sweet_fb_ld64(shadow + hi - 8)) |
++		    (sweet_fb_ld64(src + hi - 16) ^ sweet_fb_ld64(shadow + hi - 16)) |
++		    (sweet_fb_ld64(src + hi - 24) ^ sweet_fb_ld64(shadow + hi - 24)) |
++		    (sweet_fb_ld64(src + hi - 32) ^ sweet_fb_ld64(shadow + hi - 32))) == 0) {
++			hi -= 32;
++		}
++		while (hi > lo + 8 && sweet_fb_ld64(src + hi - 8) == sweet_fb_ld64(shadow + hi - 8)) {
++			hi -= 8;
++		}
++	}
++	memcpy(shadow + lo, src + lo, hi - lo);
++	memcpy(dst + lo, shadow + lo, hi - lo);
++}
++
+ static uint32_t sweet_fb_swaps_logged;
+ static uint64_t sweet_fb_swap_count;
+ 
+@@ -327,6 +422,26 @@ AppleCLCD::present(const uint8_t *rec)
+ 		}
+ 	}
+ 
++	/* A layer that IS the panel memory means userland draws into it directly: the shadow cannot follow that. */
++	if (!fShadowOff && fShadow != NULL) {
++		for (uint32_t layer = 0; layer < SWEET_FB_LAYERS; layer++) {
++			uint32_t id = get32(rec, 0x54 + 4 * layer);
++			if ((mask & (1u << layer)) && id == fSurface->id) {
++				fShadowOff = true;
++				IOLog("SWEET FB: a layer draws into the panel memory, shadow copy off\n");
++				break;
++			}
++		}
++	}
++	bool useShadow = fShadow != NULL && !fShadowOff && sweet_console_muted;
++	if (useShadow && !fShadowValid) {
++		/* first frame (the boot logo is on the panel) or after display off: learn what the panel holds */
++		memcpy(fShadow, (const void *)fPixels, fShadowSize);
++		fShadowValid = true;
++	} else if (!useShadow) {
++		fShadowValid = false;
++	}
++
+ 	for (uint32_t layer = 0; layer < SWEET_FB_LAYERS; layer++) {
+ 		uint32_t id = get32(rec, 0x54 + 4 * layer);
+ 		const uint8_t *a = rec + 0x64 + 16 * layer;
+@@ -395,9 +510,14 @@ AppleCLCD::present(const uint8_t *rec)
+ 		}
+ 		if (src != 0 && bpe == 4) {
+ 			for (int32_t y = 0; y < h; y++) {
+-				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+-				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+-				    (size_t)w * 4);
++				uint64_t pos = (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4;
++				const uint8_t *from = (const uint8_t *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow +
++				    (uint64_t)sx * 4);
++				if (useShadow) {
++					sweet_fb_row((uint8_t *)(fPixels + pos), from, fShadow + pos, (size_t)w * 4);
++				} else {
++					memcpy((void *)(fPixels + pos), from, (size_t)w * 4);
++				}
+ 			}
+ 		}
+ 		s->release();
+@@ -558,9 +678,9 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		 */
+ 		if (args->scalarInputCount >= 1) {
+ 			uint32_t want = (uint32_t)args->scalarInput[0];
+-			for (unsigned i = 0; i < 20 && want != 0 && want <= fFB->fSwapID &&
++			for (unsigned i = 0; i < 40 && want != 0 && want <= fFB->fSwapID &&
+ 			    (int32_t)(want - fFB->fPresentedSwap) > 0 && !fFB->fPowerOff; i++) {
+-				IOSleep(2);
++				IOSleep(1);
+ 			}
+ 		}
+ 		break;

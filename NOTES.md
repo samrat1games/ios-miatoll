@@ -1,5 +1,27 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-22 (night): real time, real battery, faster panel copy - patch 0093, NOT built or booted yet
+
+`xnu/patches/0093-miatoll-real-time-battery-fast-present.patch` (made as a diff against the tree after 0001..0092; `git apply --check`
+verified against a rebuild of the touched files, nothing compiled: no build tree locally). Push -> CI run -> `tools/ci-boot.sh`.
+- **Time** (sweet_modem.inc): PMIC counter >= 2026-01-01 is used as UTC; otherwise counter + `sweetrtc` offset; with no boot-arg the clock starts
+  at a floor (2026-10-22) instead of 1970. A thread (every 15 s) notices when userland sets the clock (network time / Settings) and writes it into the PM6150
+  RTC (RTC_WRITE 0x40.., CTRL 0x46 bit7, qpnp-rtc sequence), reading it back; if the PMIC refuses, the offset stays in RAM and the log says
+  `SWEET RTC: PMIC write refused`. UNVERIFIED on hardware: whether the SPMI channel for PID 0x60 is writable (DT has qcom,qpnp-rtc-write=0 = Android never writes it).
+  Check in the live log: `SWEET RTC: PMIC counter now holds ...`. Needs internet (USB) once, or Settings > Date & Time, to seed it.
+- **Battery** (SweetBattery.cpp): real polling is now the default (`sweetbattery=0` = old static 100%). Voltage -> OCV curve of the stock 5020 mAh profile
+  (dtb/live.dts, pc-temp-v1-lut, 25 C), minus I*R (100 mohm), smoothed (1 step per 10 s poll, never down while charging). Plugged/charging/full from the SMB5
+  registers chosen for sweet (0x1310, 0x110b, 0x1006, 0x1007, 0x100d); QG 0x4804/0x4808/0x48c0/0x48c2. Same PM6150 blocks as in miatoll's DT, but never run
+  on this phone before: watch the `SWEET BATTERY: raw ...` lines; `static fallback` in the log = a register check failed.
+- **Lag** (SweetFramebuffer.cpp): the panel is write-combined memory, every swap rewrote the whole 10 MB. Now a cached shadow copy of the panel is compared
+  and only changed spans are written (`sweet_fb_row`, host-tested with 200k random rows under ASan); vsync timestamps/period are steady (absolute re-arm,
+  no drift by the copy time); default `sweetfb_hz` 60; SwapWait polls every 1 ms. The shadow switches itself off if a layer is the panel surface itself,
+  or with `sweetfb_noshadow=1`, and needs `sweetfb_noconsole=1` (the console would draw behind it).
+- tools/miatoll-live-tweaks.py: Reduce Motion + Reduce Transparency on in the image (`--no-perf` to skip); same can be done by hand in Settings.
+- Not done (needs the phone): CPU frequency. Nothing programs the OSM (`qcom,clk-cpu-osm-atoll`); the cores run at whatever the ABL left. Measuring that
+  is the biggest remaining unknown for speed. Debug boot-args (`-enable_kprintf_spam`, `debug=0xc`, `serial=3`) are still on.
+
+
 ## State 2026-10-21 (late): iOS is the main firmware, USB internet works
 
 - **Boot partition = our shim** (`shim/out/shim-boot-v2.img`: kernel from CI run 39551510934 + miatoll.adt + cmdline `... cpus=8 ... sweetfb_noconsole=1 sweetusb=2`);

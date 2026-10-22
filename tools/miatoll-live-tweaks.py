@@ -7,6 +7,7 @@
  2. ByHost com.apple.migration.<IOPlatformUUID>.plist: CurrentHost prefs need it, else datamigrator
     re-runs on every boot. UUID = XNU generatePlatformUUID(unique-chip-id, chip-id) from tools/mkadt.py
  3. USB internet: /usr/libexec/sweet-netup + a launchd job (tools/netup)
+ 4. Reduce Motion + Reduce Transparency (the UI is drawn by the CPU; --no-perf skips this)
 Idempotent."""
 import hashlib, importlib.util, os, plistlib, shutil, struct, sys, uuid
 
@@ -169,6 +170,13 @@ def efsfiles(root):
     print('efs copies ->', dst)
 
 
+def perf_prefs(root):
+    """No GPU: CoreAnimation draws everything on the CPU, and blur/transparency and animations are what cost the
+    most. Reduce Transparency + Reduce Motion on from the first boot (Settings > Accessibility can undo them)."""
+    swt.merge_pref(root, 'com.apple.Accessibility', {'ReduceMotionEnabled': 1, 'EnhancedBackgroundContrastEnabled': 1})
+    print('Reduce Motion + Reduce Transparency on (CPU rendering)')
+
+
 def main():
     root = sys.argv[1]
     if not os.path.isdir(os.path.join(root, 'System/Library/xpc')):
@@ -178,6 +186,8 @@ def main():
     remove_netup_job(root)
     modemfw(root)
     efsfiles(root)
+    if '--no-perf' not in sys.argv:
+        perf_prefs(root)
     if '--no-net' not in sys.argv:
         netplugin(root)
     if '--no-apps' not in sys.argv:
