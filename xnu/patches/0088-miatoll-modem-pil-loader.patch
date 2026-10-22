@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..9991165 100644
+index 51c3fd6..ee45de0 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -1718,10 +1718,10 @@ index 51c3fd6..9991165 100644
 +	(void)PE_parse_boot_argn("sweetmodemstd", &sm_std, sizeof(sm_std));
 +	(void)PE_parse_boot_argn("sweetmodemboot", &boot, sizeof(boot));
 +	if (boot) {
-+		rfs_start();
 +		int r = sm_boot();
 +		printf("SWEET MODEM: boot result %d\n", r);
 +		if (!r) {
++			rfs_start();
 +			sm_watch();
 +		}
 +	}
