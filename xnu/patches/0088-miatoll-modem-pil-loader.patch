@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..5d88b59 100644
+index 51c3fd6..bc13581 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..5d88b59 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1821 @@ sm_probe(void)
+@@ -54,20 +61,1823 @@ sm_probe(void)
  	}
  }
  
@@ -1821,12 +1821,14 @@ index 51c3fd6..5d88b59 100644
 +}
 +
 +extern void sweet_logo_show(void);
++extern void miatoll_wifi_init(void);
 +
  static void
  sweet_modem_start(void)
  {
 +	sweet_logo_show();
 +	sm_rtc_sync();
++	miatoll_wifi_init();
 +	int bl = 0;
 +	(void)PE_parse_boot_argn("sweetbl", &bl, sizeof(bl));
 +	printf("SWEET RESET: sweetbl=%d\n", bl);
