@@ -1,0 +1,55 @@
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 56ba52c..c1ad9e0 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -35,6 +35,7 @@ private:
+ 	int fLastMode;
+ 	unsigned fShown;        /* percentage shown so far, 0 = no sample yet */
+ 	unsigned fPolls;
++	unsigned fHold;
+ 	unsigned fLastKey;
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+@@ -83,6 +84,7 @@ SweetBattery::init(OSDictionary *dictionary)
+ 	fLastMode = -1;
+ 	fShown = 0;
+ 	fPolls = 0;
++	fHold = 0;
+ 	fLastKey = 0xffffffffu;
+ 	return true;
+ }
+@@ -217,21 +219,28 @@ SweetBattery::estimatePercent(unsigned mv)
+ 	return 100;
+ }
+ 
+-/* A battery percentage that jumps with every load spike looks broken: move one step per poll, and only in the
+- * direction the cable says (down on battery, up on the charger) unless the estimate is clearly elsewhere. */
++/* A battery percentage that jumps with every load spike looks broken, and one that falls a point every few
++ * seconds looks fake: far from the estimate (4 points or more) move half the gap at once, near it move one
++ * point per minute (6 polls), and only in the direction the cable says (never down while charging). */
+ unsigned
+ SweetBattery::smooth(unsigned target, bool charging)
+ {
+ 	if (fShown == 0) {
+ 		fShown = target ? target : 1;
++		fHold = 0;
+ 		return fShown;
+ 	}
+-	if (target > fShown) {
+-		if (charging || target >= fShown + 3) {
++	if (target > fShown + 3 && charging) {
++		fShown += (target - fShown) / 2;
++	} else if (target + 3 < fShown && !charging) {
++		fShown -= (fShown - target) / 2;
++	} else if (++fHold >= 6) {
++		fHold = 0;
++		if (target > fShown && charging) {
+ 			fShown++;
++		} else if (target < fShown && !charging) {
++			fShown--;
+ 		}
+-	} else if (target < fShown && !charging) {
+-		fShown--;
+ 	}
+ 	return fShown;
+ }
