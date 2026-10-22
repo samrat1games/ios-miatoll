@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..ee45de0 100644
+index 51c3fd6..5d88b59 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..ee45de0 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1778 @@ sm_probe(void)
+@@ -54,20 +61,1821 @@ sm_probe(void)
  	}
  }
  
@@ -217,6 +217,42 @@ index 51c3fd6..ee45de0 100644
 +		*r1 = out1;
 +	}
 +	return ret;
++}
++
++/*
++ * PAS_SHUTDOWN stops a modem that is running. It blocks the calling CPU for good when the modem is not in a
++ * state to be stopped, so it always runs on its own thread and the caller waits for it only a few seconds.
++ */
++static volatile int sm_sd_done;
++
++static void
++sm_sd_thread(void *arg, wait_result_t result)
++{
++	(void)arg;
++	(void)result;
++	uint64_t r1 = 0;
++	uint64_t r0 = sm_scm(SM_SVC_PIL, 6, 0x1u, SM_PAS_ID, 0, 0, &r1);
++	printf("SWEET MODEM: PAS_SHUTDOWN: x0=%#llx x1=%#llx\n", r0, r1);
++	sm_sd_done = 1;
++	(void)thread_terminate(current_thread());
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static void
++sm_modem_shutdown(void)
++{
++	thread_t t;
++	sm_sd_done = 0;
++	if (kernel_thread_start(sm_sd_thread, NULL, &t) != KERN_SUCCESS) {
++		return;
++	}
++	thread_deallocate(t);
++	for (unsigned i = 0; i < 300 && !sm_sd_done; ++i) {
++		touch_wait(10);
++	}
++	if (!sm_sd_done) {
++		printf("SWEET MODEM: PAS_SHUTDOWN did not return, going on\n");
++	}
 +}
 +
 +static int
@@ -1720,6 +1756,12 @@ index 51c3fd6..ee45de0 100644
 +	if (boot) {
 +		int r = sm_boot();
 +		printf("SWEET MODEM: boot result %d\n", r);
++		if (r == EIO) {
++			/* the secure world still holds a modem from before: stop it and start again */
++			sm_modem_shutdown();
++			r = sm_boot();
++			printf("SWEET MODEM: second boot result %d\n", r);
++		}
 +		if (!r) {
 +			rfs_start();
 +			sm_watch();
@@ -1736,6 +1778,7 @@ index 51c3fd6..ee45de0 100644
 +	/* the two places the Android kernel leaves "reboot bootloader" for the boot chain: IMEM restart reason
 +	 * and PM6150 PON_SOFT_RB_SPARE (reason 2 << 2) */
 +	printf("SWEET RESET: start\n");
++	sm_modem_shutdown();
 +	vm_offset_t imem = sm_window(0);
 +	if (imem) {
 +		sm_pmap_map_bd(imem, 0x146a8000ULL, 0x146a8000ULL + 0x4000, VM_PROT_READ | VM_PROT_WRITE);
