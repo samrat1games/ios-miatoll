@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..f8166b4 100644
+index 51c3fd6..9991165 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..f8166b4 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1781 @@ sm_probe(void)
+@@ -54,20 +61,1778 @@ sm_probe(void)
  	}
  }
  
@@ -219,15 +219,6 @@ index 51c3fd6..f8166b4 100644
 +	return ret;
 +}
 +
-+/* PAS_SHUTDOWN: stop a modem that an earlier run (or a warm restart) left running */
-+static void
-+sm_modem_shutdown(void)
-+{
-+	uint64_t r1 = 0;
-+	uint64_t r0 = sm_scm(SM_SVC_PIL, 6, 0x1u, SM_PAS_ID, 0, 0, &r1);
-+	printf("SWEET MODEM: PAS_SHUTDOWN: x0=%#llx x1=%#llx\n", r0, r1);
-+}
-+
 +static int
 +sm_boot(void)
 +{
@@ -270,7 +261,6 @@ index 51c3fd6..f8166b4 100644
 +	}
 +	printf("SWEET MODEM: MDT %zu bytes, %u segments\n", mdt, phnum);
 +	uint64_t r1 = 0, r0;
-+	sm_modem_shutdown();
 +	/* TZ takes 32-bit buffer addresses: stage the metadata in the last 16 KiB of the modem region (below 4 GiB,
 +	 * overwritten by the modem's bss afterwards) */
 +	const uint64_t meta_off = SM_REGION_SZ - sizeof(sm_meta);
@@ -1746,7 +1736,6 @@ index 51c3fd6..f8166b4 100644
 +	/* the two places the Android kernel leaves "reboot bootloader" for the boot chain: IMEM restart reason
 +	 * and PM6150 PON_SOFT_RB_SPARE (reason 2 << 2) */
 +	printf("SWEET RESET: start\n");
-+	sm_modem_shutdown();
 +	vm_offset_t imem = sm_window(0);
 +	if (imem) {
 +		sm_pmap_map_bd(imem, 0x146a8000ULL, 0x146a8000ULL + 0x4000, VM_PROT_READ | VM_PROT_WRITE);
@@ -1765,7 +1754,15 @@ index 51c3fd6..f8166b4 100644
 +	}
 +	printf("SWEET RESET: restarting into the bootloader\n");
 +	touch_wait(300);
-+	sm_smc(0x84000009ULL, 0, 0, 0, 0, NULL, NULL, NULL);       /* PSCI SYSTEM_RESET */
++	/* PS_HOLD low = a cold PMIC restart like Android's (PSCI SYSTEM_RESET leaves the secure world's modem state
++	 * behind: the next modem start is then refused) */
++	vm_offset_t ps = ml_io_map(0x0c264000ULL, 0x4000);
++	if (ps) {
++		sm_w32(ps, 0);
++		__asm__ volatile("dsb sy" : : : "memory");
++		touch_wait(2000);
++	}
++	sm_smc(0x84000009ULL, 0, 0, 0, 0, NULL, NULL, NULL);       /* PSCI SYSTEM_RESET as a fallback */
 +	for (;;) {
 +		__asm__ volatile("wfe");
 +	}
