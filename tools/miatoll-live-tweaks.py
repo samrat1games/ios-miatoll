@@ -158,6 +158,17 @@ def modemfw(root):
     print('modem firmware ->', dst)
 
 
+def efsfiles(root):
+    """Copies of the modem's EFS partitions for the rmtfs service (patch 0088); the real partitions stay untouched."""
+    src = os.path.join(HERE, '..', 'backup')
+    dst = os.path.join(root, 'private/var/miatoll/efs')
+    os.makedirs(dst, exist_ok=True)
+    for n in ('modemst1.img', 'modemst2.img', 'fsg.img', 'fsc.img'):
+        shutil.copyfile(os.path.join(src, n), os.path.join(dst, n))
+        os.chmod(os.path.join(dst, n), 0o644)
+    print('efs copies ->', dst)
+
+
 def main():
     root = sys.argv[1]
     if not os.path.isdir(os.path.join(root, 'System/Library/xpc')):
@@ -166,6 +177,7 @@ def main():
     byhost(root)
     remove_netup_job(root)
     modemfw(root)
+    efsfiles(root)
     if '--no-net' not in sys.argv:
         netplugin(root)
     if '--no-apps' not in sys.argv:

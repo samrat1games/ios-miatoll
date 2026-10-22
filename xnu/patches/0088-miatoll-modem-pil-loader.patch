@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..7c009a7 100644
+index 51c3fd6..f9cb2a2 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..7c009a7 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1760 @@ sm_probe(void)
+@@ -54,20 +61,1770 @@ sm_probe(void)
  	}
  }
  
@@ -1639,9 +1639,19 @@ index 51c3fd6..7c009a7 100644
 +	}
 +	uint32_t secs = v[0] | (v[1] << 8) | (v[2] << 16) | ((uint32_t)v[3] << 24);
 +	printf("SWEET RTC: PMIC seconds %u\n", secs);
-+	if (secs > 1735689600u) {            /* later than 2025-01-01: a real time, not a reset RTC */
-+		clock_set_calendar_microtime(secs, 0);
-+		printf("SWEET RTC: system time set\n");
++	/* The PMIC counter is not wall-clock time: boot-arg sweetrtc=<offset> turns it into one (calendar = counter +
++	 * offset); sweetnow=<unix time at flashing> works the offset out for the first time (about 15 s after the flash
++	 * command) and prints it, to be kept as sweetrtc. */
++	uint64_t off = 0, now = 0;
++	if (PE_parse_boot_argn("sweetnow", &now, sizeof(now)) && now > 1735689600ULL) {
++		off = now + 15 - secs;
++		printf("SWEET RTC: offset %llu (use boot-arg sweetrtc=%llu)\n", off, off);
++	} else if (!PE_parse_boot_argn("sweetrtc", &off, sizeof(off))) {
++		off = 0;
++	}
++	if (off) {
++		clock_set_calendar_microtime((clock_sec_t)(secs + off), 0);
++		printf("SWEET RTC: system time set to %llu\n", (unsigned long long)secs + off);
 +	}
 +}
 +
