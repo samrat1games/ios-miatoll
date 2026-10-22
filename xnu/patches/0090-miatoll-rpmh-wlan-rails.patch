@@ -1,0 +1,27 @@
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -4,9 +4,21 @@
+ int
+ sweet_rpmh_vreg_enable(const char *res, unsigned mv)
+ {
+-	/* Board-specific helper: do not apply PMIC5-LDO policy to arbitrary resources. */
+-	if (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400) {
+-		printf("SWEET RPMH: expected ldoc11 and 2950..3400 mV\n");
++	/* Board-specific helper: only the rails this board needs, each inside the range its regulator allows. */
++	static const struct { const char *name; unsigned lo, hi; } allowed[] = {
++		{"ldoc11", 2950, 3400}, {"ldoc10", 2950, 3400},    /* WCN3990 3.3 V chains, touch */
++		{"ldoc1", 1620, 1980},                             /* WCN3990 1.8 V XO */
++		{"ldoc2", 1170, 1304},                             /* WCN3990 1.3 V RFA */
++		{"ldoa9", 480, 900},                               /* WCN3990 CX/MX */
++	};
++	bool ok = false;
++	for (unsigned i = 0; res && i < sizeof(allowed) / sizeof(allowed[0]); ++i) {
++		if (!strcmp(res, allowed[i].name) && mv >= allowed[i].lo && mv <= allowed[i].hi) {
++			ok = true;
++		}
++	}
++	if (!ok) {
++		printf("SWEET RPMH: %s %u mV is not an allowed rail\n", res ? res : "(null)", mv);
+ 		return EINVAL;
+ 	}
+ 	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {

@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..29e85cd 100644
+index 51c3fd6..1548962 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..29e85cd 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1309 @@ sm_probe(void)
+@@ -54,20 +61,1326 @@ sm_probe(void)
  	}
  }
  
@@ -1088,6 +1088,22 @@ index 51c3fd6..29e85cd 100644
 +	return result ? EIO : 0;
 +}
 +
++extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
++
++/* WCN3990 supplies as icnss_hw_power_on() lists them (vdd-cx-mx, 1.8 xo, 1.3 rfa, 3.3 ch0; ch1 = L11C is already up) */
++static void
++wlan_power_on(void)
++{
++	static const struct { const char *name; unsigned mv; } rails[] = {
++		{"ldoa9", 640}, {"ldoc1", 1800}, {"ldoc2", 1304}, {"ldoc10", 3300},
++	};
++	for (unsigned i = 0; i < sizeof(rails) / sizeof(rails[0]); ++i) {
++		int e = sweet_rpmh_vreg_enable(rails[i].name, rails[i].mv);
++		printf("SWEET WLFW: rail %s %u mV -> %d\n", rails[i].name, rails[i].mv, e);
++		touch_wait(5);
++	}
++}
++
 +static void
 +wlfw_bringup(void)
 +{
@@ -1097,6 +1113,7 @@ index 51c3fd6..29e85cd 100644
 +	uint8_t one = 1;
 +	uint32_t cid = WLFW_CLIENT_ID;
 +
++	wlan_power_on();
 +	o = qmi_tlv(t, o, 0x10, &one, 1);
 +	o = qmi_tlv(t, o, 0x13, &one, 1);
 +	o = qmi_tlv(t, o, 0x14, &one, 1);
