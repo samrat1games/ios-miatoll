@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..df55dce 100644
+index 51c3fd6..0b2bc61 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..df55dce 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1341 @@ sm_probe(void)
+@@ -54,20 +61,1411 @@ sm_probe(void)
  	}
  }
  
@@ -1238,7 +1238,7 @@ index 51c3fd6..df55dce 100644
 +#define SP_NO_APID      0xffffu
 +
 +static vm_offset_t sp_core, sp_cnfg, sp_chnl;
-+static uint16_t sp_wled_apid = SP_NO_APID;
++static uint16_t sp_wled_apid = 0;
 +
 +static uint16_t
 +sp_find_apid(uint16_t ppid)
@@ -1274,14 +1274,83 @@ index 51c3fd6..df55dce 100644
 +	return -1;
 +}
 +
++#define SP_OBS_PA       0x0e600000ULL
++static vm_offset_t sp_obs;
++
 +static int
-+sm_bl_apply(unsigned level)
++sp_init(void)
 +{
-+	if (!sp_chnl) {
++	if (!sp_core) {
 +		sp_core = ml_io_map(SP_CORE_PA, 0x2000);
 +		sp_cnfg = ml_io_map(SP_CNFG_PA, 0x1000);
 +		sp_chnl = ml_io_map(SP_CHNL_PA, 0x10000);
-+		if (!sp_core || !sp_cnfg || !sp_chnl) {
++		sp_obs = ml_io_map(SP_OBS_PA, 0x10000);
++		if (!sp_core || !sp_cnfg || !sp_chnl || !sp_obs) {
++			sp_core = 0;
++			return ENOMEM;
++		}
++	}
++	return 0;
++}
++
++/* read one PMIC register through the read-only observer channel (same method as the key driver) */
++static int
++sp_read(uint16_t apid, uint8_t addr, uint8_t *out)
++{
++	vm_offset_t ch = sp_obs + 0x80u * apid;
++	sm_w32(ch, (1u << 27) | ((uint32_t)addr << 4));      /* EXT_READL, one byte */
++	__asm__ volatile("dsb sy" : : : "memory");
++	for (unsigned i = 0; i < 1000; ++i) {
++		uint32_t st = sm_r32(ch + 0x08);
++		if (st & 1u) {
++			if (st & 0xeu) {
++				return EIO;
++			}
++			*out = (uint8_t)sm_r32(ch + 0x18);
++			return 0;
++		}
++		delay(1);
++	}
++	return ETIMEDOUT;
++}
++
++/* PM6150 RTC (SID 0, PID 0x60): seconds since the epoch, kept by the PMIC across reboots */
++static void
++sm_rtc_sync(void)
++{
++	if (sp_init()) {
++		return;
++	}
++	uint16_t apid = sp_find_apid(0x060);
++	if (apid == SP_NO_APID) {
++		printf("SWEET RTC: no apid for the RTC\n");
++		return;
++	}
++	uint8_t v[4], again = 0;
++	for (unsigned tries = 0; tries < 3; ++tries) {
++		for (unsigned i = 0; i < 4; ++i) {
++			if (sp_read(apid, 0x48 + i, &v[i])) {
++				printf("SWEET RTC: read failed\n");
++				return;
++			}
++		}
++		if (sp_read(apid, 0x48, &again) == 0 && again >= v[0]) {
++			break;
++		}
++	}
++	uint32_t secs = v[0] | (v[1] << 8) | (v[2] << 16) | ((uint32_t)v[3] << 24);
++	printf("SWEET RTC: PMIC seconds %u\n", secs);
++	if (secs > 1735689600u) {            /* later than 2025-01-01: a real time, not a reset RTC */
++		clock_set_calendar_microtime(secs, 0);
++		printf("SWEET RTC: system time set\n");
++	}
++}
++
++static int
++sm_bl_apply(unsigned level)
++{
++	if (!sp_wled_apid || sp_wled_apid == SP_NO_APID) {
++		if (sp_init()) {
 +			return ENOMEM;
 +		}
 +		sp_wled_apid = sp_find_apid(0x5d9);
@@ -1356,6 +1425,7 @@ index 51c3fd6..df55dce 100644
  sweet_modem_start(void)
  {
 +	sweet_logo_show();
++	sm_rtc_sync();
  	int enabled = 1;
  	thread_t thread;
  	(void)PE_parse_boot_argn("sweetmodem", &enabled, sizeof(enabled));
