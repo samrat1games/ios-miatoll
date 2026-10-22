@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..8666847 100644
+index 51c3fd6..86724fd 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..8666847 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,692 @@ sm_probe(void)
+@@ -54,20 +61,1104 @@ sm_probe(void)
  	}
  }
  
@@ -463,13 +463,13 @@ index 51c3fd6..8666847 100644
 +	return p + 16;
 +}
 +
-+/* ---- SMP2P (see Linux drivers/soc/qcom/smp2p.c): item 428 modem->AP, 435 AP->modem ---- */
++/* ---- SMP2P (see Linux drivers/soc/qcom/smp2p.c): item 435 modem->AP, 428 AP->modem ---- */
 +#define SM_APCS_PA      0x17c00000ULL
 +#define SM_APCS_IPC     0x0cu
 +#define SM_IPC_SMP2P    14u
 +#define SM_IPC_GLINK    12u
-+#define SM_SMP2P_IN     428u
-+#define SM_SMP2P_OUT    435u
++#define SM_SMP2P_IN     435u
++#define SM_SMP2P_OUT    428u
 +
 +static vm_offset_t sm_apcs;
 +
@@ -552,6 +552,409 @@ index 51c3fd6..8666847 100644
 +	}
 +}
 +
++
++/* ---------------- GLINK over SMEM (polled), Linux qcom_glink_smem.c / qcom_glink_native.c ---------------- */
++#define GL_DESC_ITEM    478u
++#define GL_FIFO0_ITEM   479u    /* AP -> modem */
++#define GL_FIFO1_ITEM   480u    /* modem -> AP */
++#define GL_VERSION      1u
++#define GL_FEATURES     1u      /* INTENT_REUSE */
++#define GC_VERSION      0
++#define GC_VERSION_ACK  1
++#define GC_OPEN         2
++#define GC_CLOSE        3
++#define GC_OPEN_ACK     4
++#define GC_INTENT       5
++#define GC_RX_DONE      6
++#define GC_RX_INTENT_REQ 7
++#define GC_RX_INTENT_REQ_ACK 8
++#define GC_TX_DATA      9
++#define GC_CLOSE_ACK    11
++#define GC_TX_DATA_CONT 12
++#define GC_READ_NOTIF   13
++#define GC_RX_DONE_W_REUSE 14
++
++static vm_offset_t gl_desc, gl_txf, gl_rxf;
++static uint32_t gl_txlen, gl_rxlen, gl_features = GL_FEATURES;
++static int gl_ready;
++
++#define GL_TX_TAIL (gl_desc + 0)
++#define GL_TX_HEAD (gl_desc + 4)
++#define GL_RX_TAIL (gl_desc + 8)
++#define GL_RX_HEAD (gl_desc + 12)
++
++static uint32_t
++gl_rx_avail(void)
++{
++	uint32_t head = sm_r32(GL_RX_HEAD), tail = sm_r32(GL_RX_TAIL);
++	return head < tail ? gl_rxlen - tail + head : head - tail;
++}
++
++static void
++gl_rx_peek(void *dst, uint32_t off, uint32_t n)
++{
++	uint32_t tail = sm_r32(GL_RX_TAIL) + off;
++	if (tail >= gl_rxlen) {
++		tail -= gl_rxlen;
++	}
++	uint32_t first = gl_rxlen - tail < n ? gl_rxlen - tail : n;
++	uint8_t *d = dst;
++	for (uint32_t i = 0; i < first; ++i) {
++		d[i] = *(volatile uint8_t *)(gl_rxf + tail + i);
++	}
++	for (uint32_t i = first; i < n; ++i) {
++		d[i] = *(volatile uint8_t *)(gl_rxf + i - first);
++	}
++}
++
++static void
++gl_rx_advance(uint32_t n)
++{
++	uint32_t tail = sm_r32(GL_RX_TAIL) + n;
++	if (tail >= gl_rxlen) {
++		tail -= gl_rxlen;
++	}
++	__asm__ volatile("dsb sy" : : : "memory");
++	sm_w32(GL_RX_TAIL, tail);
++}
++
++static int
++gl_tx(const void *hdr, uint32_t hlen, const void *data, uint32_t dlen)
++{
++	uint32_t head = sm_r32(GL_TX_HEAD), tail = sm_r32(GL_TX_TAIL);
++	uint32_t avail = tail <= head ? gl_txlen - head + tail : tail - head;
++	uint32_t total = (hlen + dlen + 7) & ~7u;
++	if (avail < total + 32) {
++		return EBUSY;
++	}
++	const uint8_t *parts[2] = {hdr, data};
++	uint32_t lens[2] = {hlen, dlen};
++	for (int k = 0; k < 2; ++k) {
++		for (uint32_t i = 0; i < lens[k]; ++i) {
++			*(volatile uint8_t *)(gl_txf + head) = parts[k][i];
++			if (++head >= gl_txlen) {
++				head = 0;
++			}
++		}
++	}
++	while (head & 7) {
++		*(volatile uint8_t *)(gl_txf + head) = 0;
++		if (++head >= gl_txlen) {
++			head = 0;
++		}
++	}
++	__asm__ volatile("dsb sy" : : : "memory");
++	sm_w32(GL_TX_HEAD, head);
++	sm_kick(SM_IPC_GLINK);
++	return 0;
++}
++
++static int
++gl_msg(uint16_t cmd, uint16_t p1, uint32_t p2)
++{
++	uint8_t m[8];
++	memcpy(m, &cmd, 2);
++	memcpy(m + 2, &p1, 2);
++	memcpy(m + 4, &p2, 4);
++	return gl_tx(m, 8, NULL, 0);
++}
++
++static int
++gl_setup(void)
++{
++	uint32_t size = 0;
++	gl_desc = sm_smem_item(1, GL_DESC_ITEM, &size);
++	if (!gl_desc || size != 32) {
++		printf("SWEET GLINK: descriptor missing (item %#lx size %u)\n", (unsigned long)gl_desc, size);
++		return ENOENT;
++	}
++	gl_txf = sm_smem_item(1, GL_FIFO0_ITEM, &gl_txlen);
++	if (!gl_txf) {
++		gl_txf = sm_smem_alloc(1, GL_FIFO0_ITEM, 16384);
++		gl_txlen = 16384;
++	}
++	gl_rxf = sm_smem_item(1, GL_FIFO1_ITEM, &gl_rxlen);
++	if (!gl_txf || !gl_rxf) {
++		printf("SWEET GLINK: fifos missing tx %#lx rx %#lx\n", (unsigned long)gl_txf, (unsigned long)gl_rxf);
++		return ENOENT;
++	}
++	sm_w32(GL_RX_TAIL, 0);
++	sm_w32(GL_TX_HEAD, 0);
++	printf("SWEET GLINK: tx fifo %u rx fifo %u; desc %#x %#x %#x %#x\n", gl_txlen, gl_rxlen, sm_r32(GL_TX_TAIL),
++	    sm_r32(GL_TX_HEAD), sm_r32(GL_RX_TAIL), sm_r32(GL_RX_HEAD));
++	struct { uint16_t cmd, v; uint32_t f; } vm = {GC_VERSION, GL_VERSION, gl_features};
++	gl_tx(&vm, 8, NULL, 0);
++	return 0;
++}
++
++/* one channel of interest: IPCRTR (QRTR) */
++#define GL_LCID         5u
++static uint32_t gl_rcid, gl_open_remote, gl_open_local, gl_next_iid = 1;
++static struct { uint32_t id, size; int used; } gl_rintent[8];
++static int gl_nrint;
++static uint8_t gl_msgbuf[8192];
++static uint32_t gl_msglen;
++
++static void qrtr_rx(const uint8_t *pkt, uint32_t len);
++
++static void
++gl_advertise(void)
++{
++	uint8_t m[16];
++	uint16_t cmd = GC_INTENT, l = (uint16_t)GL_LCID;
++	uint32_t count = 1, size = 4096, iid = gl_next_iid++;
++	memcpy(m, &cmd, 2);
++	memcpy(m + 2, &l, 2);
++	memcpy(m + 4, &count, 4);
++	memcpy(m + 8, &size, 4);
++	memcpy(m + 12, &iid, 4);
++	gl_tx(m, 16, NULL, 0);
++}
++
++static void
++gl_open_ours(void)
++{
++	uint8_t m[16] = {0};
++	uint16_t cmd = GC_OPEN, l = (uint16_t)GL_LCID;
++	uint32_t nlen = 7;
++	memcpy(m, &cmd, 2);
++	memcpy(m + 2, &l, 2);
++	memcpy(m + 4, &nlen, 4);
++	memcpy(m + 8, "IPCRTR", 7);
++	gl_tx(m, 16, NULL, 0);
++}
++
++/* send one packet on IPCRTR using one of the modem's advertised intents */
++static int
++gl_send(const void *data, uint32_t len)
++{
++	for (int i = 0; i < gl_nrint; ++i) {
++		if (!gl_rintent[i].used && gl_rintent[i].size >= len) {
++			gl_rintent[i].used = 1;
++			uint8_t h[16];
++			uint16_t cmd = GC_TX_DATA, l = (uint16_t)GL_LCID;
++			uint32_t iid = gl_rintent[i].id, chunk = len, left = 0;
++			memcpy(h, &cmd, 2);
++			memcpy(h + 2, &l, 2);
++			memcpy(h + 4, &iid, 4);
++			memcpy(h + 8, &chunk, 4);
++			memcpy(h + 12, &left, 4);
++			return gl_tx(h, 16, data, len);
++		}
++	}
++	gl_msg(GC_RX_INTENT_REQ, (uint16_t)GL_LCID, 4096);
++	return EAGAIN;
++}
++
++static void
++gl_poll(void)
++{
++	for (unsigned guard = 0; guard < 64 && gl_rx_avail() >= 8; ++guard) {
++		uint8_t h[8];
++		gl_rx_peek(h, 0, 8);
++		uint16_t cmd, p1;
++		uint32_t p2;
++		memcpy(&cmd, h, 2);
++		memcpy(&p1, h + 2, 2);
++		memcpy(&p2, h + 4, 4);
++		uint32_t avail = gl_rx_avail();
++		switch (cmd) {
++		case GC_VERSION:
++			printf("SWEET GLINK: rx VERSION %u features %#x\n", p1, p2);
++			gl_features &= p2;
++			{
++				struct { uint16_t cmd, v; uint32_t f; } a = {GC_VERSION_ACK, GL_VERSION, gl_features};
++				gl_tx(&a, 8, NULL, 0);
++			}
++			gl_rx_advance(8);
++			break;
++		case GC_VERSION_ACK:
++			printf("SWEET GLINK: rx VERSION_ACK %u features %#x\n", p1, p2);
++			if (p2 != gl_features) {
++				gl_features &= p2;
++				struct { uint16_t cmd, v; uint32_t f; } a = {GC_VERSION, GL_VERSION, gl_features};
++				gl_tx(&a, 8, NULL, 0);
++			} else {
++				gl_ready = 1;
++			}
++			gl_rx_advance(8);
++			break;
++		case GC_OPEN: {
++			uint32_t total = (8 + p2 + 7) & ~7u;
++			if (avail < total) {
++				return;
++			}
++			char name[32] = {0};
++			gl_rx_peek(name, 8, p2 < 31 ? p2 : 31);
++			printf("SWEET GLINK: rx OPEN rcid %u '%s'\n", p1, name);
++			gl_rx_advance(total);
++			gl_msg(GC_OPEN_ACK, p1, 0);
++			if (!strcmp(name, "IPCRTR")) {
++				gl_rcid = p1;
++				gl_open_remote = 1;
++				if (!gl_open_local) {
++					gl_open_ours();
++				}
++			}
++			break;
++		}
++		case GC_OPEN_ACK:
++			printf("SWEET GLINK: rx OPEN_ACK lcid %u\n", p1);
++			gl_rx_advance(8);
++			if (p1 == GL_LCID) {
++				gl_open_local = 1;
++				gl_advertise();
++				gl_advertise();
++			}
++			break;
++		case GC_INTENT: {
++			uint32_t total = (8 + 8 * p2 + 7) & ~7u;
++			if (avail < total) {
++				return;
++			}
++			for (uint32_t i = 0; i < p2; ++i) {
++				uint32_t sz, id;
++				gl_rx_peek(&sz, 8 + 8 * i, 4);
++				gl_rx_peek(&id, 12 + 8 * i, 4);
++				if (gl_nrint < 8) {
++					gl_rintent[gl_nrint].id = id;
++					gl_rintent[gl_nrint].size = sz;
++					gl_rintent[gl_nrint].used = 0;
++					gl_nrint++;
++				}
++				printf("SWEET GLINK: rx INTENT rcid %u id %u size %u\n", p1, id, sz);
++			}
++			gl_rx_advance(total);
++			break;
++		}
++		case GC_RX_DONE:
++		case GC_RX_DONE_W_REUSE:
++			for (int i = 0; i < gl_nrint; ++i) {
++				if (gl_rintent[i].id == p2) {
++					gl_rintent[i].used = 0;
++				}
++			}
++			gl_rx_advance(8);
++			break;
++		case GC_RX_INTENT_REQ:
++			gl_rx_advance(8);
++			gl_msg(GC_RX_INTENT_REQ_ACK, (uint16_t)GL_LCID, 1);
++			gl_advertise();
++			break;
++		case GC_RX_INTENT_REQ_ACK:
++		case GC_READ_NOTIF:
++		case GC_CLOSE_ACK:
++			gl_rx_advance(8);
++			break;
++		case GC_CLOSE:
++			printf("SWEET GLINK: rx CLOSE rcid %u\n", p1);
++			gl_rx_advance(8);
++			gl_msg(GC_CLOSE_ACK, p1, 0);
++			break;
++		case GC_TX_DATA:
++		case GC_TX_DATA_CONT: {
++			if (avail < 16) {
++				return;
++			}
++			uint32_t chunk, left;
++			gl_rx_peek(&chunk, 8, 4);
++			gl_rx_peek(&left, 12, 4);
++			uint32_t total = (16 + chunk + 7) & ~7u;
++			if (avail < total) {
++				return;
++			}
++			if (cmd == GC_TX_DATA) {
++				gl_msglen = 0;
++			}
++			if (gl_msglen + chunk <= sizeof(gl_msgbuf)) {
++				gl_rx_peek(gl_msgbuf + gl_msglen, 16, chunk);
++				gl_msglen += chunk;
++			}
++			gl_rx_advance(total);
++			if (left == 0) {
++				gl_msg(GC_RX_DONE, (uint16_t)GL_LCID, p2);
++				qrtr_rx(gl_msgbuf, gl_msglen);
++				gl_msglen = 0;
++			}
++			break;
++		}
++		default:
++			printf("SWEET GLINK: unknown cmd %u p1 %u p2 %u (avail %u), dropping fifo\n", cmd, p1, p2, avail);
++			sm_w32(GL_RX_TAIL, sm_r32(GL_RX_HEAD));
++			return;
++		}
++	}
++}
++
++/* ---------------- QRTR v1 over IPCRTR ---------------- */
++#define QRTR_TYPE_DATA      1u
++#define QRTR_TYPE_HELLO     2u
++#define QRTR_TYPE_NEW_SERVER 4u
++#define QRTR_TYPE_NEW_LOOKUP 10u
++#define QRTR_PORT_CTRL      0xfffffffeu
++#define QRTR_LOCAL_NODE     1u
++#define QRTR_BCAST          0xffffffffu
++
++static uint32_t qrtr_remote_node = QRTR_BCAST, qrtr_wlfw_node, qrtr_wlfw_port, qrtr_have_wlfw, qrtr_hello_sent;
++
++static int
++qrtr_send(uint32_t type, uint32_t dst_node, uint32_t dst_port, uint32_t src_port, const void *payload, uint32_t plen)
++{
++	uint8_t pkt[256];
++	uint32_t h[8] = {1u, type, QRTR_LOCAL_NODE, src_port, 0, plen, dst_node, dst_port};
++	if (plen > sizeof(pkt) - 32) {
++		return EINVAL;
++	}
++	memcpy(pkt, h, 32);
++	if (plen) {
++		memcpy(pkt + 32, payload, plen);
++	}
++	return gl_send(pkt, 32 + plen);
++}
++
++static void
++qrtr_rx(const uint8_t *pkt, uint32_t len)
++{
++	if (len < 32) {
++		return;
++	}
++	uint32_t h[8];
++	memcpy(h, pkt, 32);
++	printf("SWEET QRTR: rx type %u src %u:%#x dst %u:%#x size %u\n", h[1], h[2], h[3], h[6], h[7], h[5]);
++	if (h[1] == QRTR_TYPE_HELLO) {
++		qrtr_remote_node = h[2];
++	} else if (h[1] == QRTR_TYPE_DATA && h[3] == QRTR_PORT_CTRL && h[5] >= 20 && len >= 32 + 20) {
++		uint32_t c[5];
++		memcpy(c, pkt + 32, 20);
++		if (c[0] == QRTR_TYPE_NEW_SERVER) {
++			printf("SWEET QRTR: server service %#x instance %#x node %u port %#x\n", c[1], c[2], c[3], c[4]);
++			if (c[1] == 0x45) {
++				qrtr_have_wlfw = 1;
++				qrtr_wlfw_node = c[3];
++				qrtr_wlfw_port = c[4];
++			}
++		}
++	}
++}
++
++static void
++qrtr_start(void)
++{
++	/* HELLO to everyone, then ask the remote name service for all servers */
++	if (!qrtr_hello_sent && gl_open_local && gl_open_remote && gl_nrint) {
++		uint32_t hello[1] = {0};
++		(void)hello;
++		if (!qrtr_send(QRTR_TYPE_HELLO, QRTR_BCAST, QRTR_PORT_CTRL, QRTR_PORT_CTRL, NULL, 0)) {
++			uint32_t lookup[5] = {QRTR_TYPE_NEW_LOOKUP, 0, 0, 0, 0};
++			printf("SWEET QRTR: HELLO sent\n");
++			if (!qrtr_send(QRTR_TYPE_NEW_LOOKUP, QRTR_BCAST, QRTR_PORT_CTRL, 0x4000, lookup, 20)) {
++				qrtr_hello_sent = 1;
++				printf("SWEET QRTR: NEW_LOOKUP sent\n");
++			}
++		}
++	}
++}
++
 +static void
 +sm_watch(void)
 +{
@@ -569,15 +972,24 @@ index 51c3fd6..8666847 100644
 +	printf("SWEET MODEM: smem mapped at %#lx, apcs %#lx\n", (unsigned long)sm_smem, (unsigned long)sm_apcs);
 +	sm_smem_dump();
 +	sm_smp2p_setup();
-+	for (unsigned t = 0; t < 600; ++t) {
++	int gl_started = 0;
++	for (unsigned t = 0; t < 1200; ++t) {
 +		sm_smp2p_poll();
-+		if (t % 10 == 9) {
++		if (!gl_started && sm_p2p_in) {
++			gl_started = (gl_setup() == 0);
++		}
++		if (gl_started) {
++			gl_poll();
++			qrtr_start();
++		}
++		if (t % 50 == 49) {
 +			sm_kick(SM_IPC_SMP2P);
++			sm_kick(SM_IPC_GLINK);
 +		}
 +		if (t == 20 || t == 100) {
 +			sm_smem_dump();
 +		}
-+		touch_wait(250);
++		touch_wait(100);
 +	}
 +	printf("SWEET MODEM: watch done\n");
 +}

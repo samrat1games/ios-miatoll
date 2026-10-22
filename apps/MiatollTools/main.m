@@ -223,11 +223,31 @@ static BOOL Unzip(NSString *zip, NSString *dest, NSString **err) {
 }
 @end
 
+#pragma mark - brightness
+
+@interface BrightVC : UIViewController @property (nonatomic, strong) UILabel *lbl; @end
+@implementation BrightVC
+- (void)viewDidLoad {
+	[super viewDidLoad]; self.view.backgroundColor = UIColor.systemBackgroundColor;
+	int cur = 1072; size_t n = sizeof(cur); sysctlbyname("hw.sweet_brightness", &cur, &n, NULL, 0);
+	UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(24, 160, UIScreen.mainScreen.bounds.size.width - 48, 40)];
+	sl.minimumValue = 1; sl.maximumValue = 4095; sl.value = cur; sl.continuous = NO;
+	[sl addTarget:self action:@selector(changed:) forControlEvents:UIControlEventValueChanged];
+	[self.view addSubview:sl];
+	self.lbl = [[UILabel alloc] initWithFrame:CGRectMake(24, 110, UIScreen.mainScreen.bounds.size.width - 48, 30)];
+	self.lbl.text = [NSString stringWithFormat:@"Яркость: %d / 4095", cur]; [self.view addSubview:self.lbl];
+}
+- (void)changed:(UISlider *)s {
+	int v = (int)s.value; int r = sysctlbyname("hw.sweet_brightness", NULL, NULL, &v, sizeof(v));
+	self.lbl.text = [NSString stringWithFormat:@"Яркость: %d / 4095 (%s)", v, r == 0 ? "ok" : strerror(errno)];
+}
+@end
+
 #pragma mark - root menu
 
 @interface MenuVC : UITableViewController @property (nonatomic, strong) NSArray *items; @end
 @implementation MenuVC
-- (void)viewDidLoad { [super viewDidLoad]; self.title = @"MiatollTools"; self.items = @[@"Система и устройство", @"Тест экрана (цвета)", @"Тест тача (мультитач)", @"Сеть (DNS/HTTP)", @"Реестр железа (IOKit)", @"Установка IPA по ссылке", @"Зарегистрировать приложения из /Applications"]; }
+- (void)viewDidLoad { [super viewDidLoad]; self.title = @"MiatollTools"; self.items = @[@"Система и устройство", @"Тест экрана (цвета)", @"Тест тача (мультитач)", @"Сеть (DNS/HTTP)", @"Реестр железа (IOKit)", @"Установка IPA по ссылке", @"Зарегистрировать приложения из /Applications", @"Яркость"]; }
 - (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s { return self.items.count; }
 - (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip { UITableViewCell *c = [t dequeueReusableCellWithIdentifier:@"c"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"c"]; c.textLabel.text = self.items[ip.row]; c.accessoryType = UITableViewCellAccessoryDisclosureIndicator; return c; }
 - (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
@@ -240,6 +260,7 @@ static BOOL Unzip(NSString *zip, NSString *dest, NSString **err) {
 		case 4: { TextVC *v = [TextVC new]; v.producer = ^{ return RegistryText(); }; vc = v; break; }
 		case 5: vc = [InstallVC new]; break;
 		case 6: { TextVC *v = [TextVC new]; v.producer = ^{ return RegisterAll(); }; vc = v; break; }
+		case 7: vc = [BrightVC new]; break;
 	}
 	vc.title = title; [self.navigationController pushViewController:vc animated:YES];
 }
