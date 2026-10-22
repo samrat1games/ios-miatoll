@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
-index 51c3fd6..289bd95 100644
+index 51c3fd6..69e90fc 100644
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
 @@ -4,6 +4,13 @@
@@ -16,7 +16,7 @@ index 51c3fd6..289bd95 100644
  #define SM_SVC_INFO     0x6u
  #define SM_SVC_PIL      0x2u
  #define SM_INFO_AVAIL   0x1u
-@@ -54,20 +61,1333 @@ sm_probe(void)
+@@ -54,20 +61,1332 @@ sm_probe(void)
  	}
  }
  
@@ -983,9 +983,8 @@ index 51c3fd6..289bd95 100644
 +	}
 +	/* HELLO to everyone, then ask the remote name service for all servers */
 +	if (!qrtr_hello_sent && gl_open_local && gl_open_remote && gl_nrint) {
-+		uint32_t hello[1] = {0};
-+		(void)hello;
-+		if (!qrtr_send(QRTR_TYPE_HELLO, QRTR_BCAST, QRTR_PORT_CTRL, QRTR_PORT_CTRL, NULL, 0)) {
++		uint32_t hello[5] = {QRTR_TYPE_HELLO, 0, 0, 0, 0};
++		if (!qrtr_send(QRTR_TYPE_HELLO, QRTR_BCAST, QRTR_PORT_CTRL, QRTR_PORT_CTRL, hello, 20)) {
 +			uint32_t lookup[5] = {QRTR_TYPE_NEW_LOOKUP, 0, 0, 0, 0};
 +			printf("SWEET QRTR: HELLO sent\n");
 +			if (!qrtr_send(QRTR_TYPE_NEW_LOOKUP, QRTR_BCAST, QRTR_PORT_CTRL, 0x4000, lookup, 20)) {
