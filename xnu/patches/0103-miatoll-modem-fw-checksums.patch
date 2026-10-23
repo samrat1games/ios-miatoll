@@ -1,0 +1,43 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index da1b594..f6d10ed 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -199,6 +199,7 @@ sm_load_segment(const char *name, uint64_t pa, uint64_t filesz, uint64_t memsz)
+ 		return e;
+ 	}
+ 	uint64_t dst = pa - SM_REGION_PA;
++	uint64_t fnv = 0xcbf29ce484222325ULL;   /* FNV-1a of what was read: compare with `tools/fnv64.py file` on the Mac */
+ 	for (uint64_t off = 0; off < filesz; off += SM_CHUNK) {
+ 		size_t n = (filesz - off) < SM_CHUNK ? (size_t)(filesz - off) : SM_CHUNK;
+ 		e = sm_pread(vp, sm_buf, n, (off_t)off);
+@@ -206,12 +207,16 @@ sm_load_segment(const char *name, uint64_t pa, uint64_t filesz, uint64_t memsz)
+ 			printf("SWEET MODEM: read %s @%#llx failed %d\n", name, off, e);
+ 			break;
+ 		}
++		for (size_t k = 0; k < n; ++k) {
++			fnv = (fnv ^ ((const uint8_t *)sm_buf)[k]) * 0x100000001b3ULL;
++		}
+ 		if (sm_copy(dst + off, sm_buf, n)) {
+ 			e = ENOMEM;
+ 			break;
+ 		}
+ 	}
+ 	vnode_put(vp);
++	printf("SWEET MODEM: %s -> %#llx, %llu bytes, fnv %#llx\n", name, pa, filesz, fnv);
+ 	if (!e && memsz > filesz) {
+ 		e = sm_zero(dst + filesz, (size_t)(memsz - filesz));
+ 	}
+@@ -323,6 +328,13 @@ sm_boot(void)
+ 		return EINVAL;
+ 	}
+ 	vnode_put(vp);
++	{
++		uint64_t f = 0xcbf29ce484222325ULL;
++		for (size_t k = 0; k < mdt; ++k) {
++			f = (f ^ sm_meta[k]) * 0x100000001b3ULL;
++		}
++		printf("SWEET MODEM: MODEM.MDT %zu bytes, fnv %#llx\n", mdt, f);
++	}
+ 	/* ELF32 header + program headers */
+ 	const uint8_t *m = sm_meta;
+ 	uint32_t phoff, phnum;
