@@ -13,3 +13,4 @@ apps/*/build/
 logs-*.txt
 logs/
 board/identity.json
+extras/
