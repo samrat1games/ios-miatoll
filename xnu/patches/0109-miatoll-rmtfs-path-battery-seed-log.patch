@@ -1,0 +1,48 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index e6d7069..7ec9319 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1456,13 +1456,14 @@ rfs_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
+ 	case 1: {                                            /* open */
+ 		const uint8_t *p = qmi_find(b, blen, 0x01, &tl);
+ 		char path[64] = {0};
+-		if (p && tl >= 2) {
+-			uint16_t n;
+-			memcpy(&n, p, 2);
++		if (p && tl) {
++			/* a top-level QMI string has no length prefix (rmtfs_open_req: path, TLV 1): the modem's
++			 * '/boot/modem_fs1' arrived as 'oot/modem_fs1' when two length bytes were assumed */
++			uint16_t n = tl;
+ 			if (n > 63) {
+ 				n = 63;
+ 			}
+-			memcpy(path, p + 2, n);
++			memcpy(path, p, n);
+ 		}
+ 		const char *file = rfs_map_path(path);
+ 		uint32_t id = 0;
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index b3842e1..e80ab86 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -340,12 +340,14 @@ bool
+ SweetBattery::seedFromQG(void)
+ {
+ 	uint8_t valid = 0, soc = 0, t[4], r[4];
+-	for (unsigned i = 0; i < 4; ++i) {
+-		if (sweet_spmi_read(0, 0xb654 + i, &t[i]) || sweet_spmi_read(0, 0x6048 + i, &r[i])) {
+-			return false;
+-		}
+-	}
+-	if (sweet_spmi_read(0, 0xb646, &valid) || sweet_spmi_read(0, 0xb647, &soc)) {
++	int e1 = 0, e2 = 0;
++	for (unsigned i = 0; i < 4 && !e1 && !e2; ++i) {
++		e1 = sweet_spmi_read(0, 0xb654 + i, &t[i]);
++		e2 = sweet_spmi_read(0, 0x6048 + i, &r[i]);
++	}
++	int e3 = sweet_spmi_read(0, 0xb646, &valid), e4 = sweet_spmi_read(0, 0xb647, &soc);
++	if (e1 || e2 || e3 || e4) {
++		IOLog("SWEET BATTERY: QG SDAM not readable (sdam time %d, rtc %d, valid %d, soc %d)\n", e1, e2, e3, e4);
+ 		return false;
+ 	}
+ 	uint32_t stored = (uint32_t)t[0] | ((uint32_t)t[1] << 8) | ((uint32_t)t[2] << 16) | ((uint32_t)t[3] << 24);
