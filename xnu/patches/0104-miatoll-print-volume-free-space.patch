@@ -1,0 +1,36 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index f6d10ed..98b4a35 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1912,6 +1912,21 @@ sm_bl_sysctl SYSCTL_HANDLER_ARGS
+ SYSCTL_PROC(_hw, OID_AUTO, sweet_brightness, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sm_bl_sysctl, "I",
+     "panel backlight 1..4095");
+ 
++/* free space of the iOS volume: a full volume makes HFS writes fail (hfs_clonefile ... 34) and daemons crash */
++static void
++sm_statfs(const char *when)
++{
++	mount_t mp = rootvnode ? vnode_mount(rootvnode) : NULL;
++	struct vfsstatfs *sp = mp ? vfs_statfs(mp) : NULL;
++	if (sp) {
++		printf("SWEET FS: %s: block size %u, %llu blocks, %llu free, %llu available (%llu MiB free)\n", when,
++		    (unsigned)sp->f_bsize, (unsigned long long)sp->f_blocks, (unsigned long long)sp->f_bfree,
++		    (unsigned long long)sp->f_bavail, (unsigned long long)sp->f_bavail * sp->f_bsize >> 20);
++	} else {
++		printf("SWEET FS: %s: no root mount\n", when);
++	}
++}
++
+ static void
+ sm_thread(void *arg, wait_result_t result)
+ {
+@@ -1922,7 +1937,9 @@ sm_thread(void *arg, wait_result_t result)
+ 	unsigned delay_s = 70;
+ 	(void)PE_parse_boot_argn("sweetmodemdelay", &delay_s, sizeof(delay_s));
+ 	printf("SWEET MODEM: starting in %u s\n", delay_s);
++	sm_statfs("at modem thread start");
+ 	touch_wait(delay_s * 1000u);
++	sm_statfs("when the modem starts");
+ 	sm_probe();
+ 	int boot = 1;
+ 	(void)PE_parse_boot_argn("sweetmodemstd", &sm_std, sizeof(sm_std));
