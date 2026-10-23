@@ -1,5 +1,17 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-23 (evening): battery 0106, modem diag 0107, copy engine 0108, ipa-serve - NOT booted with logs yet
+- Recovery (Linux QG) ground truth: 85%, Charging, 4057 mV, -1174 mA, charge_full 5077 mAh; our voltage curve gave ~55%.
+  0106: seed from QG SDAM (PM6150 0xb646 valid / 0xb647 SOC / 0xb654 time, < 12 h by RTC 0x6048), coulomb count,
+  no voltage pull when seeded, CurrentCapacity/MaxCapacity in percent, charger state debounced (2 polls).
+- MODEM.B18 (11.7 MB) reads back in the kernel with fnv 0x7d5f1a932a23ea34; the file on the Mac image and the
+  phone's userdata blocks (sda18 @ 14539935744, all 2866 blocks checked from recovery) are right (0xa29e97e5d52b17e2).
+  Likely cause of AUTH_AND_RESET 0xffcfffb9. 0107 logs per-256 KiB chunk fnv for files > 8 MB to find the bad part.
+- After flashing 0105 and 0107 with sweetmodem=1 the phone did NOT appear on USB in iOS (bridge saw nothing).
+- 0108: WCN3990 copy engine (polled, physical DMA only if the SMMU probe says stream 0xc0 bypasses), waits for
+  HTC READY. Boot-arg sweetwlce=0 skips it.
+- tools/ipa-serve.py: serves IPAs on 192.168.7.1:8080 for MiatollTools' installer; refuses 32-bit / FairPlay.
+
 ## Handoff 2026-10-23: Wi-Fi (WCN3990) firmware bring-up - patch 0105, NOT built or booted yet
 - Observed (logs/boot-modem17.txt, older code): modem up, GLINK IPCRTR open, QRTR HELLO both ways, modem announced
   only services 0x42 (servreg notifier) and 0x2b, then nothing; WLFW (0x45) never appeared. Newest logs (modem-v99*)

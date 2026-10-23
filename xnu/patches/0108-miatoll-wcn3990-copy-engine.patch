@@ -1,0 +1,333 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 4730b93..e6d7069 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -10,6 +10,8 @@
+ #include <sys/namei.h>
+ #include <vm/pmap.h>
+ #include <mach/vm_param.h>
++#include <vm/vm_kern.h>
++#include <arm/caches_internal.h>
+ 
+ #define SM_SVC_INFO     0x6u
+ #define SM_SVC_PIL      0x2u
+@@ -2134,18 +2136,20 @@ wlfw_wlan_enable(void)
+  * DMA (next step) depends on it. Boot-arg sweetwlsmmu=0 skips it.
+  */
+ #define SMMU_PA         0x15000000ULL
+-static void
++/* 1: DMA with physical addresses can work (stream 0xc0 bypasses, or unmatched streams bypass) */
++static int
+ wlan_smmu_probe(void)
+ {
+ 	uint32_t on = 1;
+ 	(void)PE_parse_boot_argn("sweetwlsmmu", &on, sizeof(on));
+ 	if (!on) {
+-		return;
++		return 1;
+ 	}
+ 	vm_offset_t g = ml_io_map(SMMU_PA, 0x1000);
+ 	if (!g) {
+-		return;
++		return 0;
+ 	}
++	int ok = -1;
+ 	uint32_t cr0 = sm_r32(g + 0x0), idr0 = sm_r32(g + 0x20), idr1 = sm_r32(g + 0x24);
+ 	uint32_t nsmr = idr0 & 0xff, ncb = idr1 & 0xff;
+ 	printf("SWEET WLSMMU: sCR0 %#x IDR0 %#x IDR1 %#x (%u SMRs, %u context banks)\n", cr0, idr0, idr1, nsmr, ncb);
+@@ -2155,8 +2159,274 @@ wlan_smmu_probe(void)
+ 		if ((smr & 0x80000000u) && ((id ^ 0xc0u) & ~mask & 0x7fffu) == 0) {
+ 			printf("SWEET WLSMMU: SMR%u %#x -> S2CR %#x (type %u, cb %u)\n", i, smr, s2cr, (s2cr >> 16) & 3,
+ 			    s2cr & 0xff);
++			if (ok < 0) {
++				ok = ((s2cr >> 16) & 3) == 1;   /* S2CR type 1 = bypass, 0 = translate, 2 = fault */
++			}
+ 		}
+ 	}
++	if (ok < 0) {
++		ok = !(cr0 & (1u << 10));               /* no match: sCR0.USFCFG 0 lets unmatched streams bypass */
++	}
++	printf("SWEET WLSMMU: physical DMA %s\n", ok ? "should work" : "would fault (needs an SMMU context bank)");
++	return ok;
++}
++
++/*
++ * ---------------- WCN3990 copy engine (Linux ath10k ce.c + snoc.c) ----------------
++ * 12 copy engines at membase 0x18800000 + 0x240000 + 0x1000 * n, 64-bit descriptors {addr, nbytes, flags, hash},
++ * read indices mirrored into DDR (ce_rri), source write indices through the shadow registers the firmware was
++ * told about in wlan_cfg. Polled (no interrupts). First goal: the firmware's HTC READY on the receive rings.
++ * DMA addresses are physical: right only if the SMMU passes stream 0xc0 through (wlan_smmu_probe decides).
++ */
++#define WL_MEM_PA               0x18800000ULL
++#define WL_MEM_SZ               0x800000u
++#define WL_CE(i)                (0x240000u + 0x1000u * (i))
++#define WL_CE_RRI_LO            0x24c004u
++#define WL_CE_RRI_HI            0x24c008u
++#define WL_CE_SHADOW_SR(i)      (0x32000u + 4u * (i))
++#define WL_CE_NUM               12
++#define WL_CE_SR_BASE_LO        0x00
++#define WL_CE_SR_BASE_HI        0x04
++#define WL_CE_SR_SIZE           0x08
++#define WL_CE_DR_BASE_LO        0x0c
++#define WL_CE_DR_BASE_HI        0x10
++#define WL_CE_DR_SIZE           0x14
++#define WL_CE_CTRL1             0x18    /* dmax 15:0, src byte swap 17, dst byte swap 18, rri update 19 */
++#define WL_CE_SR_WR             0x3c
++#define WL_CE_DR_WR             0x40
++#define WL_CE_CUR_SRRI          0x44
++#define WL_CE_CUR_DRRI          0x48
++#define WL_CE_SRC_WM            0x4c    /* low 31:16, high 15:0 */
++#define WL_CE_DST_WM            0x50
++#define WL_RXN                  32u     /* receive descriptors per ring (power of two) */
++#define WL_BUFSZ                2048u
++#define WL_DESC_ADDR_MASK       0x7ffffffffULL  /* CE_DESC_ADDR_MASK, bits 34:0 */
++
++/* host_ce_config_wlan: source entries, largest source transfer, has a receive ring */
++static const struct { uint16_t src_n, src_max; uint8_t rx; } wl_ce_cfg[WL_CE_NUM] = {
++	{16, 2048, 0}, {0, 0, 1}, {0, 0, 1}, {32, 2048, 0}, {64, 256, 0}, {0, 0, 1},
++	{0, 0, 0}, {0, 0, 0}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1},
++};
++
++static volatile int wl_htc_ready;
++
++struct wl_desc {
++	uint64_t addr;
++	uint16_t nbytes, flags;
++	uint32_t hash;
++};
++
++static struct {
++	vm_offset_t reg;
++	vm_offset_t mem;                /* rings + rri, contiguous */
++	uint64_t mem_pa;
++	vm_offset_t buf;                /* receive buffers, contiguous */
++	uint64_t buf_pa;
++	struct {
++		struct wl_desc *src, *dst;
++		uint64_t src_pa, dst_pa, rxbuf_pa;
++		vm_offset_t rxbuf;
++		uint32_t src_wr, dst_wr, dst_sw;
++	} ce[WL_CE_NUM];
++} wl;
++
++static inline uint32_t
++wl_r(uint32_t off)
++{
++	return *(volatile uint32_t *)(wl.reg + off);
++}
++
++static inline void
++wl_w(uint32_t off, uint32_t v)
++{
++	*(volatile uint32_t *)(wl.reg + off) = v;
++	__asm__ volatile("dsb sy" : : : "memory");
++}
++
++static void
++wl_sync(vm_offset_t va, uint64_t pa, uint32_t len)
++{
++	(void)va;
++	flush_dcache64((addr64_t)pa, len, TRUE);        /* clean + invalidate: the device and the CPU both see RAM */
++}
++
++static int
++wl_alloc(vm_size_t size, vm_offset_t *va, uint64_t *pa)
++{
++	if (kmem_alloc_contig(kernel_map, va, size, PAGE_MASK, 0, 0, KMA_DATA | KMA_ZERO | KMA_PERMANENT,
++	    VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		return ENOMEM;
++	}
++	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)*va);
++	if (!pn) {
++		return EFAULT;
++	}
++	*pa = ptoa_64(pn);
++	wl_sync(*va, *pa, (uint32_t)size);
++	return 0;
++}
++
++/* one HTC message from a receive ring (ath10k_htc_rx_completion_handler, control endpoint only for now) */
++static void
++wl_htc_rx(unsigned ce, const uint8_t *b, uint32_t n)
++{
++	static unsigned logged;
++	if (logged++ < 40) {
++		printf("SWEET WLCE: CE%u rx %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x\n",
++		    ce, n, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13]);
++	}
++	if (n < 10) {
++		return;
++	}
++	uint16_t len, msg;
++	memcpy(&len, b + 2, 2);
++	memcpy(&msg, b + 8, 2);
++	if (b[0] == 0 && msg == 1 && n >= 15) {         /* endpoint 0, HTC_MSG_READY_ID */
++		uint16_t credits, csize;
++		memcpy(&credits, b + 10, 2);
++		memcpy(&csize, b + 12, 2);
++		printf("SWEET WLCE: HTC READY: %u credits of %u bytes, %u endpoints\n", credits, csize, b[14]);
++		wl_htc_ready = 1;
++	}
++}
++
++static void
++wl_ce_post(unsigned i)
++{
++	uint32_t w = wl.ce[i].dst_wr;
++	struct wl_desc *d = &wl.ce[i].dst[w];
++	d->addr = (wl.ce[i].rxbuf_pa + (uint64_t)w * WL_BUFSZ) & WL_DESC_ADDR_MASK;
++	d->nbytes = 0;
++	d->flags = 0;
++	wl_sync((vm_offset_t)d, wl.ce[i].dst_pa + w * sizeof(*d), sizeof(*d));
++	wl_sync(wl.ce[i].rxbuf + w * WL_BUFSZ, wl.ce[i].rxbuf_pa + (uint64_t)w * WL_BUFSZ, WL_BUFSZ);
++	wl.ce[i].dst_wr = (w + 1) & (WL_RXN - 1);
++	wl_w(WL_CE(i) + WL_CE_DR_WR, wl.ce[i].dst_wr);
++}
++
++/* receive completions: a descriptor with nbytes != 0 at the software index (ath10k completed_recv_next_64) */
++static unsigned
++wl_ce_poll(void)
++{
++	unsigned got = 0;
++	for (unsigned i = 0; i < WL_CE_NUM; ++i) {
++		if (!wl.ce[i].dst) {
++			continue;
++		}
++		for (unsigned guard = 0; guard < WL_RXN; ++guard) {
++			uint32_t s = wl.ce[i].dst_sw;
++			struct wl_desc *d = &wl.ce[i].dst[s];
++			wl_sync((vm_offset_t)d, wl.ce[i].dst_pa + s * sizeof(*d), sizeof(*d));
++			uint16_t n = d->nbytes;
++			if (!n) {
++				break;
++			}
++			d->nbytes = 0;
++			wl_sync((vm_offset_t)d, wl.ce[i].dst_pa + s * sizeof(*d), sizeof(*d));
++			wl_sync(wl.ce[i].rxbuf + s * WL_BUFSZ, wl.ce[i].rxbuf_pa + (uint64_t)s * WL_BUFSZ, WL_BUFSZ);
++			wl_htc_rx(i, (const uint8_t *)(wl.ce[i].rxbuf + s * WL_BUFSZ), n < WL_BUFSZ ? n : WL_BUFSZ);
++			wl.ce[i].dst_sw = (s + 1) & (WL_RXN - 1);
++			wl_ce_post(i);          /* the slot at the write index always has a free buffer (see wl_ce_start) */
++			got++;
++		}
++	}
++	return got;
++}
++
++/* send one buffer on a source ring (ath10k _ath10k_ce_send_nolock_64 with the shadow write index) */
++static int
++wl_ce_send(unsigned i, uint64_t pa, uint16_t n, uint16_t transfer_id)
++{
++	if (!wl.ce[i].src) {
++		return ENODEV;
++	}
++	uint32_t cnt = wl_ce_cfg[i].src_n, w = wl.ce[i].src_wr;
++	wl_sync(wl.mem, wl.mem_pa, 64);
++	uint32_t rri = *(volatile uint32_t *)(wl.mem + 4 * i) & 0xffff;
++	if (((rri - 1 - w) & (cnt - 1)) == 0) {
++		return EBUSY;
++	}
++	struct wl_desc *d = &wl.ce[i].src[w];
++	d->addr = pa & WL_DESC_ADDR_MASK;
++	d->nbytes = n;
++	d->flags = (uint16_t)((transfer_id << 4) & 0xfff0);       /* meta data mask 0xfff0, lsb 4 */
++	d->hash = 0;
++	wl_sync((vm_offset_t)d, wl.ce[i].src_pa + w * sizeof(*d), sizeof(*d));
++	wl.ce[i].src_wr = (w + 1) & (cnt - 1);
++	wl_w(WL_CE_SHADOW_SR(i), wl.ce[i].src_wr);
++	return 0;
++}
++
++static int
++wl_ce_start(void)
++{
++	wl.reg = ml_io_map(WL_MEM_PA, WL_MEM_SZ);
++	if (!wl.reg) {
++		return ENOMEM;
++	}
++	/* rings: up to 64 x 16 bytes each, 1 KiB apart, plus the read-index mirror at offset 0 */
++	if (wl_alloc(0x10000, &wl.mem, &wl.mem_pa) || wl_alloc(WL_CE_NUM * WL_RXN * WL_BUFSZ, &wl.buf, &wl.buf_pa)) {
++		printf("SWEET WLCE: no DMA memory\n");
++		return ENOMEM;
++	}
++	printf("SWEET WLCE: rings at pa %#llx, buffers at pa %#llx\n", wl.mem_pa, wl.buf_pa);
++	for (unsigned i = 0; i < WL_CE_NUM; ++i) {
++		uint32_t base = WL_CE(i), c1;
++		if (wl_ce_cfg[i].src_n) {
++			uint32_t n = wl_ce_cfg[i].src_n;
++			wl.ce[i].src = (struct wl_desc *)(wl.mem + 0x1000 + 0x800 * i);
++			wl.ce[i].src_pa = wl.mem_pa + 0x1000 + 0x800 * i;
++			wl.ce[i].src_wr = wl_r(base + WL_CE_SR_WR) & (n - 1);
++			wl_w(base + WL_CE_SR_BASE_LO, (uint32_t)wl.ce[i].src_pa);
++			wl_w(base + WL_CE_SR_BASE_HI, (uint32_t)(wl.ce[i].src_pa >> 32) & 0x1f);
++			wl_w(base + WL_CE_SR_SIZE, n);
++			c1 = wl_r(base + WL_CE_CTRL1);
++			wl_w(base + WL_CE_CTRL1, (c1 & ~0x2ffffu) | wl_ce_cfg[i].src_max);
++			wl_w(base + WL_CE_SRC_WM, n);           /* low mark 0 (31:16), high mark n (15:0) */
++		}
++		if (wl_ce_cfg[i].rx) {
++			wl.ce[i].dst = (struct wl_desc *)(wl.mem + 0x8000 + 0x200 * i);
++			wl.ce[i].dst_pa = wl.mem_pa + 0x8000 + 0x200 * i;
++			wl.ce[i].rxbuf = wl.buf + (vm_offset_t)i * WL_RXN * WL_BUFSZ;
++			wl.ce[i].rxbuf_pa = wl.buf_pa + (uint64_t)i * WL_RXN * WL_BUFSZ;
++			wl.ce[i].dst_sw = wl_r(base + WL_CE_CUR_DRRI) & (WL_RXN - 1);
++			wl.ce[i].dst_wr = wl.ce[i].dst_sw;
++			wl_w(base + WL_CE_DR_BASE_LO, (uint32_t)wl.ce[i].dst_pa);
++			wl_w(base + WL_CE_DR_BASE_HI, (wl_r(base + WL_CE_DR_BASE_HI) & ~0x1fu) |
++			    ((uint32_t)(wl.ce[i].dst_pa >> 32) & 0x1f));
++			wl_w(base + WL_CE_DR_SIZE, WL_RXN);
++			wl_w(base + WL_CE_CTRL1, wl_r(base + WL_CE_CTRL1) & ~(1u << 18));
++			wl_w(base + WL_CE_DST_WM, WL_RXN);
++		}
++	}
++	/* ath10k_ce_alloc_rri: read indices into DDR, every CE told to update them */
++	wl_w(WL_CE_RRI_LO, (uint32_t)wl.mem_pa);
++	wl_w(WL_CE_RRI_HI, (uint32_t)(wl.mem_pa >> 32) & 0x1f);
++	for (unsigned i = 0; i < WL_CE_NUM; ++i) {
++		wl_w(WL_CE(i) + WL_CE_CTRL1, wl_r(WL_CE(i) + WL_CE_CTRL1) | 0x80000u);
++	}
++	/* receive buffers: all slots but one (a full ring would look empty) */
++	for (unsigned i = 0; i < WL_CE_NUM; ++i) {
++		if (wl.ce[i].dst) {
++			for (unsigned k = 0; k + 1 < WL_RXN; ++k) {
++				wl_ce_post(i);
++			}
++		}
++	}
++	printf("SWEET WLCE: %u copy engines set up, waiting for HTC READY\n", WL_CE_NUM);
++	for (unsigned ms = 0; ms < 10000 && !wl_htc_ready; ms += 10) {
++		wl_ce_poll();
++		gl_poll();
++		tftp_work();
++		touch_wait(10);
++	}
++	if (!wl_htc_ready) {
++		printf("SWEET WLCE: no HTC READY in 10 s (CE1 drri %u, CE2 drri %u)\n", wl_r(WL_CE(1) + WL_CE_CUR_DRRI),
++		    wl_r(WL_CE(2) + WL_CE_CUR_DRRI));
++		return ETIMEDOUT;
++	}
++	(void)wl_ce_send;
++	return 0;
+ }
+ 
+ static void
+@@ -2178,10 +2448,17 @@ wlfw_after_cap(uint32_t board_id)
+ 		return;
+ 	}
+ 	printf("SWEET WLFW: FW_READY\n");
+-	if (!wlfw_wlan_enable()) {
+-		printf("SWEET WLFW: WLAN firmware in mission mode, copy engine is next\n");
++	if (wlfw_wlan_enable()) {
++		return;
++	}
++	printf("SWEET WLFW: WLAN firmware in mission mode\n");
++	uint32_t ce = 1;
++	(void)PE_parse_boot_argn("sweetwlce", &ce, sizeof(ce));
++	if (!wlan_smmu_probe() || !ce) {
++		printf("SWEET WLCE: copy engine not started\n");
++		return;
+ 	}
+-	wlan_smmu_probe();
++	wl_ce_start();
+ }
+ 
+ static void
