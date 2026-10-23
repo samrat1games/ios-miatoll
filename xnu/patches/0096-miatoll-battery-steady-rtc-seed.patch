@@ -1,0 +1,103 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 69bcb12..f9209bb 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1808,11 +1808,13 @@ sm_rtc_sync(void)
+ 	}
+ 	printf("SWEET RTC: PMIC seconds %u\n", secs);
+ 	uint64_t off = 0, now = 0;
++	bool seed = false;
+ 	if (secs >= SM_RTC_REAL_MIN) {
+ 		off = 0;
+ 	} else if (PE_parse_boot_argn("sweetnow", &now, sizeof(now)) && now > SM_RTC_REAL_MIN) {
+ 		off = now + 15 - secs;
+ 		printf("SWEET RTC: offset %llu (use boot-arg sweetrtc=%llu)\n", off, off);
++		seed = true;
+ 	} else if (!PE_parse_boot_argn("sweetrtc", &off, sizeof(off)) || off == 0) {
+ 		off = SM_RTC_FLOOR - secs;
+ 	}
+@@ -1825,6 +1827,17 @@ sm_rtc_sync(void)
+ 	clock_set_calendar_microtime((clock_sec_t)cal, 0);
+ 	printf("SWEET RTC: system time set to %llu\n", (unsigned long long)cal);
+ 	sm_rtc_apid = apid;
++	if (seed) {
++		/* sweetnow= gave the real time: put it into the PMIC counter, so that later boots need no boot-arg */
++		uint32_t back = 0;
++		if (sm_rtc_write(apid, (uint32_t)cal) == 0 && sm_rtc_read(apid, &back) == 0 &&
++		    back + 3 >= (uint32_t)cal && back <= (uint32_t)cal + 3) {
++			sm_rtc_off = (int64_t)cal - (int64_t)back;
++			printf("SWEET RTC: PMIC counter seeded with %u\n", back);
++		} else {
++			printf("SWEET RTC: PMIC refused the seed (read back %u)\n", back);
++		}
++	}
+ 	thread_t th;
+ 	if (kernel_thread_start(sm_rtc_thread, NULL, &th) == KERN_SUCCESS) {
+ 		thread_deallocate(th);
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index c1ad9e0..b0b8de4 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -36,6 +36,8 @@ private:
+ 	unsigned fShown;        /* percentage shown so far, 0 = no sample yet */
+ 	unsigned fPolls;
+ 	unsigned fHold;
++	unsigned fBad;
++	bool fHaveGood;
+ 	unsigned fLastKey;
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+@@ -85,6 +87,8 @@ SweetBattery::init(OSDictionary *dictionary)
+ 	fShown = 0;
+ 	fPolls = 0;
+ 	fHold = 0;
++	fBad = 0;
++	fHaveGood = false;
+ 	fLastKey = 0xffffffffu;
+ 	return true;
+ }
+@@ -180,17 +184,21 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ bool
+ SweetBattery::readWord(unsigned address, uint16_t *value)
+ {
++	/* The ADC moves by a count or two between reads: two samples within 16 counts (3 mV / 5 mA) agree. */
+ 	uint16_t previous = 0;
+-	for (unsigned attempt = 0; attempt < 4; ++attempt) {
++	for (unsigned attempt = 0; attempt < 6; ++attempt) {
+ 		uint8_t lo, hi;
+ 		if (sweet_spmi_read(0, address, &lo) ||
+ 		    sweet_spmi_read(0, address + 1, &hi)) {
+ 			return false;
+ 		}
+ 		uint16_t next = (uint16_t)((unsigned)lo | ((unsigned)hi << 8));
+-		if (attempt && next == previous) {
+-			*value = next;
+-			return true;
++		if (attempt) {
++			int d = (int)next - (int)previous;
++			if (d >= -16 && d <= 16) {
++				*value = next;
++				return true;
++			}
+ 		}
+ 		previous = next;
+ 	}
+@@ -258,9 +266,18 @@ SweetBattery::poll(void)
+ 	/* Zero, reset, floating, or implausible data cannot become 0% battery. */
+ 	valid = valid && mv >= 2800 && mv <= 4600;
+ 	if (!valid) {
++		/* One bad poll must not flip the status bar to a made-up 100%: keep the last real sample. */
++		if (fHaveGood) {
++			if ((++fBad % 6) == 1) {
++				IOLog("SWEET BATTERY: read failed (%u in a row), keeping the last sample\n", fBad);
++			}
++			return;
++		}
+ 		publish(100, 4200, 0, true, true, false, true, false, false);
+ 		return;
+ 	}
++	fBad = 0;
++	fHaveGood = true;
+ 	/* The charger registers are optional: a failed read means "not plugged", never an invalid battery. */
+ 	if (sweet_spmi_read(0, 0x1310, &usb)) {
+ 		usb = 0;
