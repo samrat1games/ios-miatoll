@@ -1,0 +1,12 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 7ec9319..ac82d55 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -12,6 +12,7 @@
+ #include <mach/vm_param.h>
+ #include <vm/vm_kern.h>
+ #include <arm/caches_internal.h>
++extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ 
+ #define SM_SVC_INFO     0x6u
+ #define SM_SVC_PIL      0x2u
