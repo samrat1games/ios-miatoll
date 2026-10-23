@@ -1,0 +1,163 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index ac82d55..596ebc1 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -821,6 +821,8 @@ static void tftp_client_rx(uint32_t slot, uint32_t node, uint32_t port, const ui
+ static void wlfw_ind_rx(const uint8_t *q, uint32_t qlen);
+ static void sm_announce_more(uint32_t node);
+ static void qrtr_flush(void);
++static void pdr_server_seen(const uint32_t *c);
++static void pdr_rx(const uint8_t *q, uint32_t qlen);
+ static void tftp_work(void);
+ 
+ static void
+@@ -1052,6 +1054,7 @@ gl_poll(void)
+ #define QRTR_LOCAL_NODE     1u
+ #define QRTR_BCAST          0xffffffffu
+ /* services this side offers to the modem (see pdm_request, tftp_request) */
++#define PDR_PORT                0x4005u /* our client port for the modem's service notifier */
+ #define PDM_SERVICE             0x40u
+ #define PDM_INSTANCE            0x101u  /* qrtr_publish(64, version 257, instance 0) = instance << 8 | version: НЕ ПРОВЕРЕНО */
+ #define PDM_PORT                0x4003u
+@@ -1131,6 +1134,10 @@ qrtr_rx(const uint8_t *pkt, uint32_t len)
+ 		pdm_request(h[2], h[3], pkt + 32, len - 32);
+ 		return;
+ 	}
++	if (h[1] == QRTR_TYPE_DATA && h[7] == PDR_PORT) {
++		pdr_rx(pkt + 32, len - 32);
++		return;
++	}
+ 	if (h[1] == QRTR_TYPE_DATA && h[7] == TFTP_PORT) {
+ 		tftp_request(h[2], h[3], pkt + 32, len - 32);
+ 		return;
+@@ -1155,6 +1162,7 @@ qrtr_rx(const uint8_t *pkt, uint32_t len)
+ 			memcpy(c, pkt + 32, 20);
+ 			if (c[0] == QRTR_TYPE_NEW_SERVER) {
+ 				printf("SWEET QRTR: server service %#x instance %#x node %u port %#x\n", c[1], c[2], c[3], c[4]);
++				pdr_server_seen(c);
+ 				if (c[1] == 0x45) {
+ 					qrtr_have_wlfw = 1;
+ 					qrtr_wlfw_node = c[3];
+@@ -1183,6 +1191,7 @@ qrtr_rx(const uint8_t *pkt, uint32_t len)
+ 		uint32_t c[5];
+ 		memcpy(c, pkt + 32, 20);
+ 		printf("SWEET QRTR: server service %#x instance %#x node %u port %#x\n", c[1], c[2], c[3], c[4]);
++		pdr_server_seen(c);
+ 		if (c[1] == 0x45) {
+ 			qrtr_have_wlfw = 1;
+ 			qrtr_wlfw_node = c[3];
+@@ -1193,6 +1202,7 @@ qrtr_rx(const uint8_t *pkt, uint32_t len)
+ 		memcpy(c, pkt + 32, 20);
+ 		if (c[0] == QRTR_TYPE_NEW_SERVER) {
+ 			printf("SWEET QRTR: server service %#x instance %#x node %u port %#x\n", c[1], c[2], c[3], c[4]);
++			pdr_server_seen(c);
+ 			if (c[1] == 0x45) {
+ 				qrtr_have_wlfw = 1;
+ 				qrtr_wlfw_node = c[3];
+@@ -2008,6 +2018,96 @@ sm_announce_more(uint32_t node)
+ 	qrtr_send(QRTR_TYPE_NEW_SERVER, node, QRTR_PORT_CTRL, QRTR_PORT_CTRL, tftp, 20);
+ }
+ 
++
++/*
++ * ---------------- protection-domain listener (Linux qcom_pdr, drivers/soc/qcom/pdr_interface.c) ----------------
++ * ath10k asks for "wlan/fw" -> msm/modem/wlan_pd (instance 180) and registers as a listener with the modem's
++ * service notifier (QMI 0x42, instance 180 << 8 | 1); every state indication is acknowledged. Whether the
++ * registration is what makes the modem start wlan_pd (and load WLANMDSP.MBN over TFTP): НЕ ПРОВЕРЕНО.
++ */
++#define PDR_SERVICE             0x42u
++#define PDR_INSTANCE            0xb401u
++#define PDR_REGISTER_LISTENER   0x20u
++#define PDR_STATE_UPDATED_IND   0x22u
++#define PDR_SET_ACK             0x23u
++#define PDR_PATH                "msm/modem/wlan_pd"
++
++static uint32_t pdr_node, pdr_port;
++static int pdr_have, pdr_sent;
++static uint16_t pdr_txn = 0x100;
++
++static void
++pdr_server_seen(const uint32_t *c)
++{
++	if (c[1] == PDR_SERVICE && c[2] == PDR_INSTANCE) {
++		pdr_node = c[3];
++		pdr_port = c[4];
++		pdr_have = 1;
++	}
++}
++
++static const char *
++pdr_state(uint32_t st)
++{
++	return st == 0x1fffffff ? "UP" : st == 0x0fffffff ? "DOWN" : st == 0x2fffffff ? "EARLY_DOWN" :
++	       st == 0x7fffffff ? "UNINIT" : "?";
++}
++
++static void
++pdr_register(void)
++{
++	uint8_t t[96], one = 1;
++	uint32_t o = qmi_tlv(t, 0, 0x01, &one, 1);
++	o = qmi_tlv(t, o, 0x02, PDR_PATH, (uint16_t)strlen(PDR_PATH));
++	pdr_sent = 1;
++	int e = qmi_send_msg(0, pdr_node, pdr_port, PDR_PORT, ++pdr_txn, PDR_REGISTER_LISTENER, t, (uint16_t)o);
++	printf("SWEET PDR: register listener for %s at %u:%#x -> %d\n", PDR_PATH, pdr_node, pdr_port, e);
++}
++
++static void
++pdr_rx(const uint8_t *q, uint32_t qlen)
++{
++	if (qlen < 7) {
++		return;
++	}
++	uint16_t txn, msg, tlen, l = 0;
++	memcpy(&txn, q + 1, 2);
++	memcpy(&msg, q + 3, 2);
++	memcpy(&tlen, q + 5, 2);
++	if (7u + tlen > qlen) {
++		tlen = (uint16_t)(qlen - 7);
++	}
++	const uint8_t *b = q + 7;
++	if (q[0] == 2 && msg == PDR_REGISTER_LISTENER) {
++		const uint8_t *r = qmi_find(b, tlen, 0x02, &l), *st = qmi_find(b, tlen, 0x10, &l);
++		uint32_t state = 0;
++		if (st && l >= 4) {
++			memcpy(&state, st, 4);
++		}
++		printf("SWEET PDR: listener registered: result %u, %s is %s (%#x)\n", r ? r[0] : 0xff, PDR_PATH,
++		    pdr_state(state), state);
++	} else if (q[0] == 4 && msg == PDR_STATE_UPDATED_IND) {
++		const uint8_t *st = qmi_find(b, tlen, 0x01, &l);
++		uint32_t state = 0;
++		if (st && l >= 4) {
++			memcpy(&state, st, 4);
++		}
++		uint16_t pl = 0, il = 0, id = 0;
++		const uint8_t *path = qmi_find(b, tlen, 0x02, &pl), *ti = qmi_find(b, tlen, 0x03, &il);
++		if (ti && il >= 2) {
++			memcpy(&id, ti, 2);
++		}
++		printf("SWEET PDR: %.*s is now %s (%#x), transaction %u\n", path ? (int)pl : 0, path ? (const char *)path : "",
++		    pdr_state(state), state, id);
++		uint8_t t[96];
++		uint32_t o = qmi_tlv(t, 0, 0x01, path ? path : (const uint8_t *)"", path ? pl : 0);
++		o = qmi_tlv(t, o, 0x02, &id, 2);
++		qmi_send_msg(0, pdr_node, pdr_port, PDR_PORT, ++pdr_txn, PDR_SET_ACK, t, (uint16_t)o);
++	} else if (q[0] == 2) {
++		printf("SWEET PDR: response to %#x\n", msg);
++	}
++}
++
+ extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ 
+ /* WCN3990 supplies as icnss_hw_power_on() lists them (vdd-cx-mx, 1.8 xo, 1.3 rfa, 3.3 ch0; ch1 = L11C is already up) */
+@@ -2574,6 +2674,9 @@ sm_watch(void)
+ 			if (qrtr_hello_sent && (t % 20) == 0 && t < 1000) {
+ 				rfs_announce(qrtr_remote_node == QRTR_BCAST ? 0 : qrtr_remote_node);
+ 			}
++			if (pdr_have && !pdr_sent) {
++				pdr_register();
++			}
+ 			static int wlfw_done;
+ 			if (qrtr_have_wlfw && !wlfw_done) {
+ 				wlfw_done = 1;
