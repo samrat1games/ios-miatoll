@@ -1,0 +1,20 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 9e0fa29..4730b93 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -207,8 +207,15 @@ sm_load_segment(const char *name, uint64_t pa, uint64_t filesz, uint64_t memsz)
+ 			printf("SWEET MODEM: read %s @%#llx failed %d\n", name, off, e);
+ 			break;
+ 		}
++		uint64_t cf = 0xcbf29ce484222325ULL;
+ 		for (size_t k = 0; k < n; ++k) {
+ 			fnv = (fnv ^ ((const uint8_t *)sm_buf)[k]) * 0x100000001b3ULL;
++			cf = (cf ^ ((const uint8_t *)sm_buf)[k]) * 0x100000001b3ULL;
++		}
++		/* MODEM.B18 reads back wrong although its blocks on the disk are right: big files get a checksum per
++		 * 256 KiB chunk to find where */
++		if (filesz > 8u * 1024u * 1024u) {
++			printf("SWEET MODEM: %s chunk @%#llx fnv %#llx\n", name, off, cf);
+ 		}
+ 		if (sm_copy(dst + off, sm_buf, n)) {
+ 			e = ENOMEM;
