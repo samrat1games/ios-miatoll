@@ -1,0 +1,102 @@
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index d76c15e..c3b20a0 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -39,6 +39,9 @@
+ #include <net/if_media.h>
+ #include <net/dlil.h>
+ #include <sys/kern_event.h>
++#include <sys/vnode_internal.h>
++#include <sys/fcntl.h>
++#include <kern/kalloc.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ void sweet_usb_probe(void);
+@@ -752,6 +755,69 @@ ud_cmd_send(socket_t so, struct sockaddr_in *to, const char *text)
+ 	(void)sock_send(so, &msg, 0, &sent);
+ }
+ 
++/*
++ * "prefsreset <domain>": /private/var/mobile/Library/Preferences/<domain>.plist is copied to <domain>.plist.sweetbak
++ * and emptied, so iOS starts from its defaults at the next boot. For settings that crash SpringBoard (CoreUI effects
++ * need CoreImage on a GPU, SpringBoard died in CoreImage with pc 0) when there is no UI left to undo them.
++ */
++static int
++ud_prefs_reset(const char *domain, char *msg, size_t msglen)
++{
++	for (const char *c = domain; *c; ++c) {
++		if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '.' || *c == '-')) {
++			snprintf(msg, msglen, "bad domain\n");
++			return EINVAL;
++		}
++	}
++	char path[160], bak[176];
++	snprintf(path, sizeof(path), "/private/var/mobile/Library/Preferences/%s.plist", domain);
++	snprintf(bak, sizeof(bak), "%s.sweetbak", path);
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t vp = NULLVP, bp = NULLVP;
++	int e = vnode_open(path, FREAD | FWRITE, 0, 0, &vp, ctx);
++	if (e) {
++		snprintf(msg, msglen, "%s: open %d\n", path, e);
++		return e;
++	}
++	struct vnode_attr va;
++	VATTR_INIT(&va);
++	VATTR_WANTED(&va, va_data_size);
++	e = vnode_getattr(vp, &va, ctx);
++	size_t size = e ? 0 : (size_t)va.va_data_size;
++	void *buf = NULL;
++	if (!e && (size == 0 || size > 1024 * 1024)) {
++		e = EFBIG;
++	}
++	if (!e && (buf = kalloc_data(size, Z_WAITOK)) == NULL) {
++		e = ENOMEM;
++	}
++	int resid = 0;
++	if (!e) {
++		e = vn_rdwr(UIO_READ, vp, (caddr_t)buf, (int)size, 0, UIO_SYSSPACE, IO_NOAUTH, vfs_context_ucred(ctx), &resid,
++		    vfs_context_proc(ctx));
++	}
++	if (!e) {
++		e = vnode_open(bak, O_CREAT | O_TRUNC | FWRITE, 0644, 0, &bp, ctx);
++	}
++	if (!e) {
++		e = vn_rdwr(UIO_WRITE, bp, (caddr_t)buf, (int)(size - (size_t)resid), 0, UIO_SYSSPACE, IO_NOAUTH,
++		    vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++		(void)vnode_close(bp, FWRITE, ctx);
++	}
++	if (!e) {
++		VATTR_INIT(&va);
++		VATTR_SET(&va, va_data_size, 0);
++		e = vnode_setattr(vp, &va, ctx);
++	}
++	(void)vnode_close(vp, FREAD | FWRITE, ctx);
++	if (buf) {
++		kfree_data(buf, size);
++	}
++	snprintf(msg, msglen, "%s: %s (%lu bytes kept in .sweetbak)\n", path, e ? "failed" : "emptied", (unsigned long)size);
++	printf("SWEET USB: prefsreset %s -> %d\n", domain, e);
++	return e;
++}
++
+ static void
+ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+@@ -810,12 +876,16 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 			ud_cmd_send(so, &from, "restarting into the bootloader\n");
+ 			ud_sleep_ms(300);
+ 			sweet_remote_bootloader();
++		} else if (strncmp(buf, "prefsreset ", 11) == 0) {
++			char msg[240];
++			(void)ud_prefs_reset(buf + 11, msg, sizeof(msg));
++			ud_cmd_send(so, &from, msg);
+ 		} else if (strcmp(buf, "reboot") == 0) {
+ 			ud_cmd_send(so, &from, "restarting\n");
+ 			ud_sleep_ms(300);
+ 			sweet_remote_reboot();
+ 		} else {
+-			ud_cmd_send(so, &from, "unknown: ping, log, bootloader, reboot\n");
++			ud_cmd_send(so, &from, "unknown: ping, log, bootloader, reboot, prefsreset <domain>\n");
+ 		}
+ 	}
+ }
