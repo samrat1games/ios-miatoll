@@ -1,0 +1,163 @@
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index a5117c6..b3842e1 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -42,6 +42,10 @@ private:
+ 	uint64_t fLastMs;
+ 	bool fHaveGood;
+ 	unsigned fLastKey;
++	bool fSeeded;           /* fMilli started from the Linux QG's stored SOC: the voltage curve does not steer it */
++	unsigned fChgVotes, fExtVotes;
++	bool fCharging, fExternal;
++	bool seedFromQG(void);
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+ 	void publish(unsigned percent, unsigned mv, int ma, bool external,
+@@ -94,6 +98,9 @@ SweetBattery::init(OSDictionary *dictionary)
+ 	fBad = 0;
+ 	fMilli = -1;
+ 	fLastMs = 0;
++	fSeeded = false;
++	fChgVotes = fExtVotes = 0;
++	fCharging = fExternal = false;
+ 	fHaveGood = false;
+ 	fLastKey = 0xffffffffu;
+ 	return true;
+@@ -126,10 +133,11 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+     bool capable, bool charging, bool full, bool measured, bool currentValid)
+ {
+ 	/* Use consistent mAh units (DT nominal=5020). powerd computes C*100/M. */
++	/* iPhone convention (AppleSmartBattery): CurrentCapacity/MaxCapacity are percent, mAh only in AppleRaw*. */
+ 	const unsigned capacity = (5020u * percent + 50u) / 100u;
+ 	setBatteryInstalled(true);
+-	setCurrentCapacity(capacity);
+-	setMaxCapacity(5020);
++	setCurrentCapacity(percent);
++	setMaxCapacity(100);
+ 	setExternalConnected(external);
+ 	setExternalChargeCapable(capable);
+ 	setIsCharging(charging);
+@@ -161,7 +169,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 		const char *keys[] = {kIOBatteryCurrentChargeKey, kIOBatteryCapacityKey,
+ 		    kIOBatteryVoltageKey, kIOBatteryAmperageKey, kIOBatteryCycleCountKey,
+ 		    kIOBatteryFlagsKey};
+-		UInt32 values[] = {capacity, 5020, mv, (UInt32)ma, 0,
++		UInt32 values[] = {percent, 100, mv, (UInt32)ma, 0,
+ 		    (UInt32)(kIOBatteryInstalled | (external ? kIOBatteryChargerConnect : 0) |
+ 		    (charging ? kIOBatteryCharge : 0))};
+ 		for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+@@ -280,6 +288,8 @@ SweetBattery::coulomb(unsigned target, bool charging, bool external, bool full,
+ 	}
+ 	if (full) {
+ 		fMilli = 100000;
++	} else if (fSeeded && !currentValid) {
++		/* no current reading this poll: hold the counted value */
+ 	} else if (fMilli < 0 || !currentValid) {
+ 		unsigned p = smooth(target, charging);
+ 		fMilli = (int)p * 1000;
+@@ -296,14 +306,19 @@ SweetBattery::coulomb(unsigned target, bool charging, bool external, bool full,
+ 		} else if (!external) {
+ 			fMilli -= delta;
+ 		}
+-		/* near idle the voltage is trustworthy: pull a twentieth of the gap per poll */
+-		if (mag < 150 && !charging) {
+-			fMilli += ((int)target * 1000 - fMilli) / 20;
+-		}
+-		/* far off (a different battery state than assumed): follow the voltage estimate quickly */
++		/* Without the QG start value the voltage curve is all there is: near idle pull a twentieth of the gap
++		 * per poll, far off follow it quickly. With it the curve stays out (it read 55% at a real 85%), except
++		 * that an empty-looking cell at rest caps the count at a few percent. */
+ 		int gap = (int)target * 1000 - fMilli;
+-		if (!charging && (gap > 15000 || gap < -15000) && mag < 400) {
+-			fMilli += gap / 4;
++		if (!fSeeded) {
++			if (mag < 150 && !charging) {
++				fMilli += gap / 20;
++			}
++			if (!charging && (gap > 15000 || gap < -15000) && mag < 400) {
++				fMilli += ((int)target * 1000 - fMilli) / 4;
++			}
++		} else if (!charging && mag < 150 && target <= 3 && fMilli > 5000) {
++			fMilli = 5000;
+ 		}
+ 	}
+ 	if (fMilli < 0) {
+@@ -315,6 +330,38 @@ SweetBattery::coulomb(unsigned target, bool charging, bool external, bool full,
+ 	return (unsigned)((fMilli + 500) / 1000);
+ }
+ 
++/*
++ * Linux qpnp-qg keeps its state of charge in the PM6150 SDAM at 0xb600 (qcom,qg-sdam@b600, qg-reg.h):
++ * 0x46 valid, 0x47 SOC percent, 0x54 RTC seconds of the store. Android/recovery refresh it while running, so
++ * right after a reboot from there it is the real fuel-gauge value (recovery read 85% while the voltage curve
++ * said about 55%). Trusted when written less than 12 hours ago by the raw PMIC RTC counter (0x6048).
++ */
++bool
++SweetBattery::seedFromQG(void)
++{
++	uint8_t valid = 0, soc = 0, t[4], r[4];
++	for (unsigned i = 0; i < 4; ++i) {
++		if (sweet_spmi_read(0, 0xb654 + i, &t[i]) || sweet_spmi_read(0, 0x6048 + i, &r[i])) {
++			return false;
++		}
++	}
++	if (sweet_spmi_read(0, 0xb646, &valid) || sweet_spmi_read(0, 0xb647, &soc)) {
++		return false;
++	}
++	uint32_t stored = (uint32_t)t[0] | ((uint32_t)t[1] << 8) | ((uint32_t)t[2] << 16) | ((uint32_t)t[3] << 24);
++	uint32_t now = (uint32_t)r[0] | ((uint32_t)r[1] << 8) | ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
++	uint32_t age = now >= stored ? now - stored : 0xffffffffu;
++	IOLog("SWEET BATTERY: QG SDAM valid %u soc %u%% stored at %u, rtc %u (age %d s)\n", valid, soc, stored, now,
++	    (int)age);
++	if (valid != 1 || soc > 100 || age > 12u * 3600u) {
++		return false;
++	}
++	fMilli = (int)soc * 1000;
++	fShown = soc ? soc : 1;
++	fSeeded = true;
++	return true;
++}
++
+ void
+ SweetBattery::poll(void)
+ {
+@@ -338,8 +385,12 @@ SweetBattery::poll(void)
+ 		publish(100, 4200, 0, true, true, false, true, false, false);
+ 		return;
+ 	}
++	bool first = !fHaveGood;
+ 	fBad = 0;
+ 	fHaveGood = true;
++	if (first) {
++		(void)seedFromQG();
++	}
+ 	/* The charger registers are optional: a failed read means "not plugged", never an invalid battery. */
+ 	if (sweet_spmi_read(0, 0x1310, &usb)) {
+ 		usb = 0;
+@@ -359,8 +410,25 @@ SweetBattery::poll(void)
+ 	bool external = (usb & 0x10u) != 0;
+ 	bool capable = external && (path & 0x10u) && (path & 1u) && !(path & 0x40u);
+ 	unsigned state = charger & 7u;
+-	bool charging = capable && state >= 1 && state <= 4 &&
++	bool chargingNow = capable && state >= 1 && state <= 4 &&
+ 	    !(error & 2u) && !(temperature & 0x0cu);
++	/* the cable and charge state change the status bar only after two polls agree (no flicker) */
++	if (first || chargingNow == fCharging) {
++		fChgVotes = 0;
++		fCharging = chargingNow;
++	} else if (++fChgVotes >= 2) {
++		fChgVotes = 0;
++		fCharging = chargingNow;
++	}
++	if (first || external == fExternal) {
++		fExtVotes = 0;
++		fExternal = external;
++	} else if (++fExtVotes >= 2) {
++		fExtVotes = 0;
++		fExternal = external;
++	}
++	external = fExternal;
++	bool charging = fCharging;
+ 	/* Inhibit (0) does not by itself establish full capacity. */
+ 	bool full = external && state == 5 && !(error & 2u);
+ 	int ma = 0;
