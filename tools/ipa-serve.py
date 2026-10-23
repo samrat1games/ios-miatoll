@@ -2,7 +2,7 @@
 """Send IPAs to the phone over the USB network: serves them from the Mac at http://192.168.7.1:8080/<n>.ipa
 for MiatollTools -> "Скачать и установить" (it downloads, unzips into /Applications and registers the app).
 
-    tools/ipa-serve.py APP.ipa [MORE.ipa ...]
+    tools/ipa-serve.py [--no-check] APP.ipa [MORE.ipa ...]     (--no-check: data bundles like MiatollEFS.ipa)
 
 Needs the USB network up (tools/sweet-bridge-macos.sh). Listens on 192.168.7.1 only, never on other networks.
 Each IPA is checked first: iOS 16 runs only 64-bit (arm64) code, and an App Store binary still encrypted with
@@ -64,12 +64,13 @@ def check(ipa):
 
 
 def main():
-    ipas = sys.argv[1:]
+    ipas = [a for a in sys.argv[1:] if a != '--no-check']
+    skip_check = '--no-check' in sys.argv[1:]
     if not ipas:
         sys.exit(__doc__)
     served = {}
     for ipa in ipas:
-        why = check(ipa)
+        why = None if skip_check else check(ipa)
         if why:
             print(f'skip {os.path.basename(ipa)}: {why}')
             continue

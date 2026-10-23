@@ -1,0 +1,31 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index a08ce74..f402ac4 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1402,9 +1402,24 @@ rfs_map_path(const char *path)
+ static int
+ rfs_file_open(const char *name, vnode_t *vpp)
+ {
++	/* the copies in SM_EFS_DIR never reached the phone's root (ENOENT in boot 0112); the same files can be
++	 * installed as an app bundle with MiatollTools (tools/mk-efs-ipa.sh + tools/ipa-serve.py --no-check) */
++	static const char *const dirs[] = {SM_EFS_DIR, "/Applications/MiatollEFS.app/"};
++	static int which = -1;
+ 	char path[96];
+-	snprintf(path, sizeof(path), "%s%s", SM_EFS_DIR, name);
+-	return vnode_lookup(path, 0, vpp, vfs_context_kernel());
++	int e = ENOENT;
++	for (unsigned i = 0; i < sizeof(dirs) / sizeof(dirs[0]); ++i) {
++		snprintf(path, sizeof(path), "%s%s", dirs[i], name);
++		e = vnode_lookup(path, 0, vpp, vfs_context_kernel());
++		if (!e) {
++			if (which != (int)i) {
++				which = (int)i;
++				printf("SWEET RFS: EFS files from %s\n", dirs[i]);
++			}
++			return 0;
++		}
++	}
++	return e;
+ }
+ 
+ static void
