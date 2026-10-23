@@ -1,0 +1,18 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index ec70ecd..2a77de6 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1905,7 +1905,12 @@ sm_thread(void *arg, wait_result_t result)
+ {
+ 	(void)arg;
+ 	(void)result;
+-	touch_wait(10 * 1000u);
++	/* The modem started reliably when it was started 70 s into the boot and stopped starting when this was cut to
++	 * 10 s: boot-arg sweetmodemdelay=<seconds> (default 70) */
++	unsigned delay_s = 70;
++	(void)PE_parse_boot_argn("sweetmodemdelay", &delay_s, sizeof(delay_s));
++	printf("SWEET MODEM: starting in %u s\n", delay_s);
++	touch_wait(delay_s * 1000u);
+ 	sm_probe();
+ 	int boot = 1;
+ 	(void)PE_parse_boot_argn("sweetmodemstd", &sm_std, sizeof(sm_std));
