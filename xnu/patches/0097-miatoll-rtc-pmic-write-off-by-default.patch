@@ -1,0 +1,27 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index f9209bb..ec70ecd 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1707,7 +1707,7 @@ sp_read(uint16_t apid, uint8_t addr, uint8_t *out)
+ 
+ static uint16_t sm_rtc_apid = SP_NO_APID;
+ static int64_t sm_rtc_off;              /* calendar = counter + sm_rtc_off */
+-static int sm_rtc_write_fails;
++static int sm_rtc_write_fails = 3;      /* PMIC writes are off (a boot with the seed write never reported back): boot-arg sweetrtcwrite=1 turns them on */
+ static int sm_rtc_chan;
+ 
+ static int
+@@ -1827,7 +1827,12 @@ sm_rtc_sync(void)
+ 	clock_set_calendar_microtime((clock_sec_t)cal, 0);
+ 	printf("SWEET RTC: system time set to %llu\n", (unsigned long long)cal);
+ 	sm_rtc_apid = apid;
+-	if (seed) {
++	int rtc_write = 0;
++	(void)PE_parse_boot_argn("sweetrtcwrite", &rtc_write, sizeof(rtc_write));
++	if (rtc_write) {
++		sm_rtc_write_fails = 0;
++	}
++	if (seed && rtc_write) {
+ 		/* sweetnow= gave the real time: put it into the PMIC counter, so that later boots need no boot-arg */
+ 		uint32_t back = 0;
+ 		if (sm_rtc_write(apid, (uint32_t)cal) == 0 && sm_rtc_read(apid, &back) == 0 &&
