@@ -1,0 +1,31 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 596ebc1..a08ce74 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1462,7 +1462,10 @@ rfs_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
+ 		blen = (uint16_t)(qlen - 7);
+ 	}
+ 	uint16_t tl;
+-	static unsigned logged;
++	static unsigned logged, seen;
++	if (seen++ < 60) {
++		printf("SWEET RFS: request %#x txn %u, %u bytes from %u:%#x\n", msg, txn, blen, node, port);
++	}
+ 	switch (msg) {
+ 	case 1: {                                            /* open */
+ 		const uint8_t *p = qmi_find(b, blen, 0x01, &tl);
+@@ -1531,8 +1534,13 @@ rfs_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
+ 		const uint8_t *pv = qmi_find(b, blen, 0x03, &tl);
+ 		uint32_t err = 0;
+ 		vnode_t vp = NULLVP;
+-		if (id < 1 || id > 8 || !rfs_caller[id - 1].used || !pv || tl < 1 || rfs_file_open(rfs_caller[id - 1].file, &vp)) {
++		int fe = -1;
++		if (id < 1 || id > 8 || !rfs_caller[id - 1].used || !pv || tl < 1 ||
++		    (fe = rfs_file_open(rfs_caller[id - 1].file, &vp)) != 0) {
+ 			err = 1;
++			printf("SWEET RFS: iovec refused: caller %u (used %d) dir %u iovec %s len %u, file open %d, %u bytes [%02x %02x %02x %02x %02x %02x %02x %02x]\n",
++			    id, (id >= 1 && id <= 8) ? rfs_caller[id - 1].used : -1, write, pv ? "yes" : "no", tl, fe, blen,
++			    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+ 		} else {
+ 			uint32_t cnt = pv[0];
+ 			static uint8_t sec[512];
