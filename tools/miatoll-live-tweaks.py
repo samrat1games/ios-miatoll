@@ -148,12 +148,13 @@ def remove_netup_job(root):
 
 
 def modemfw(root):
-    """Modem + WLAN firmware from the phone's own `modem` partition (tools/fat16-ls.py) for the PIL loader (patch 0088)."""
+    """Modem + WLAN firmware from the phone's own `modem` partition (tools/fat16-ls.py) for the PIL loader (patch 0088)
+    and the TFTP server the modem reads WLANMDSP.MBN / BDWLAN.Bxx through (patch 0105)."""
     src = os.path.join(HERE, '..', 'research', 'modem', 'fs', 'IMAGE')
     dst = os.path.join(root, 'private/var/miatoll/modem')
     os.makedirs(dst, exist_ok=True)
     for n in sorted(os.listdir(src)):
-        if n.startswith('MODEM.') or n in ('BDWLAN.BIN', 'WLANMDSP.MBN', 'QDSP6M.QDB'):
+        if n.startswith(('MODEM.', 'BDWLAN.')) or n in ('WLANMDSP.MBN', 'QDSP6M.QDB'):
             shutil.copyfile(os.path.join(src, n), os.path.join(dst, n))
     os.chmod(dst, 0o755)
     print('modem firmware ->', dst)

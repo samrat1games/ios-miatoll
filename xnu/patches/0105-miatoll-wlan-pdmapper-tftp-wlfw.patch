@@ -1,0 +1,937 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 98b4a35..9e0fa29 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -796,21 +796,35 @@ gl_setup(void)
+ /* one channel of interest: IPCRTR (QRTR) */
+ #define GL_LCID         5u
+ static uint32_t gl_rcid, gl_open_remote, gl_open_local, gl_next_iid = 1;
+-static struct { uint32_t id, size; int used; } gl_rintent[8];
++static struct { uint32_t id, size; int used; } gl_rintent[64];   /* the modem advertises ~30 (128..8320 bytes) */
+ static int gl_nrint;
++static unsigned gl_rxdone_log;
+ static uint8_t gl_msgbuf[8192];
+ static uint32_t gl_msglen;
+ 
+ static void qrtr_rx(const uint8_t *pkt, uint32_t len);
+ static void rfs_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen);
+ static void rfs_announce(uint32_t node);
++static void pdm_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen);
++static void tftp_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen);
++static void tftp_client_rx(uint32_t slot, uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen);
++static void wlfw_ind_rx(const uint8_t *q, uint32_t qlen);
++static void sm_announce_more(uint32_t node);
++static void qrtr_flush(void);
++static void tftp_work(void);
+ 
+ static void
+-gl_advertise(void)
++gl_advertise(uint32_t size)
+ {
+ 	uint8_t m[16];
+ 	uint16_t cmd = GC_INTENT, l = (uint16_t)GL_LCID;
+-	uint32_t count = 1, size = 4096, iid = gl_next_iid++;
++	uint32_t count = 1, iid = gl_next_iid++;
++	if (size < 4096) {
++		size = 4096;
++	}
++	if (size > (uint32_t)sizeof(gl_msgbuf)) {
++		size = (uint32_t)sizeof(gl_msgbuf);
++	}
+ 	memcpy(m, &cmd, 2);
+ 	memcpy(m + 2, &l, 2);
+ 	memcpy(m + 4, &count, 4);
+@@ -832,26 +846,39 @@ gl_open_ours(void)
+ 	gl_tx(m, 16, NULL, 0);
+ }
+ 
+-/* send one packet on IPCRTR using one of the modem's advertised intents */
++/* send one packet on IPCRTR using the smallest free intent the modem advertised that fits */
+ static int
+ gl_send(const void *data, uint32_t len)
+ {
+-	for (int i = 0; i < gl_nrint; ++i) {
+-		if (!gl_rintent[i].used && gl_rintent[i].size >= len) {
+-			gl_rintent[i].used = 1;
+-			uint8_t h[16];
+-			uint16_t cmd = GC_TX_DATA, l = (uint16_t)GL_LCID;
+-			uint32_t iid = gl_rintent[i].id, chunk = len, left = 0;
+-			memcpy(h, &cmd, 2);
+-			memcpy(h + 2, &l, 2);
+-			memcpy(h + 4, &iid, 4);
+-			memcpy(h + 8, &chunk, 4);
+-			memcpy(h + 12, &left, 4);
+-			return gl_tx(h, 16, data, len);
+-		}
++	static uint32_t gl_req_pending;
++	int i = -1;
++	for (int k = 0; k < gl_nrint; ++k) {
++		if (!gl_rintent[k].used && gl_rintent[k].size >= len && (i < 0 || gl_rintent[k].size < gl_rintent[i].size)) {
++			i = k;
++		}
++	}
++	if (i < 0) {
++		/* ask once per size; the modem answers with an INTENT and RX_INTENT_REQ_ACK */
++		if (gl_req_pending != len) {
++			gl_req_pending = len;
++			gl_msg(GC_RX_INTENT_REQ, (uint16_t)GL_LCID, len);
++		}
++		return EAGAIN;
++	}
++	gl_req_pending = 0;
++	uint8_t h[16];
++	uint16_t cmd = GC_TX_DATA, l = (uint16_t)GL_LCID;
++	uint32_t iid = gl_rintent[i].id, chunk = len, left = 0;
++	memcpy(h, &cmd, 2);
++	memcpy(h + 2, &l, 2);
++	memcpy(h + 4, &iid, 4);
++	memcpy(h + 8, &chunk, 4);
++	memcpy(h + 12, &left, 4);
++	int e = gl_tx(h, 16, data, len);
++	if (!e) {
++		gl_rintent[i].used = 1;
+ 	}
+-	gl_msg(GC_RX_INTENT_REQ, (uint16_t)GL_LCID, 4096);
+-	return EAGAIN;
++	return e;
+ }
+ 
+ static void
+@@ -911,8 +938,9 @@ gl_poll(void)
+ 			gl_rx_advance(8);
+ 			if (p1 == GL_LCID) {
+ 				gl_open_local = 1;
+-				gl_advertise();
+-				gl_advertise();
++				for (int k = 0; k < 4; ++k) {
++					gl_advertise((uint32_t)sizeof(gl_msgbuf));
++				}
+ 			}
+ 			break;
+ 		case GC_INTENT: {
+@@ -924,7 +952,7 @@ gl_poll(void)
+ 				uint32_t sz, id;
+ 				gl_rx_peek(&sz, 8 + 8 * i, 4);
+ 				gl_rx_peek(&id, 12 + 8 * i, 4);
+-				if (gl_nrint < 8) {
++				if (gl_nrint < (int)(sizeof(gl_rintent) / sizeof(gl_rintent[0]))) {
+ 					gl_rintent[gl_nrint].id = id;
+ 					gl_rintent[gl_nrint].size = sz;
+ 					gl_rintent[gl_nrint].used = 0;
+@@ -937,18 +965,28 @@ gl_poll(void)
+ 		}
+ 		case GC_RX_DONE:
+ 		case GC_RX_DONE_W_REUSE:
+-			printf("SWEET GLINK: rx RX_DONE(%u) cid %u iid %u\n", cmd, p1, p2);
++			if (gl_rxdone_log++ < 20) {
++				printf("SWEET GLINK: rx RX_DONE(%u) cid %u iid %u\n", cmd, p1, p2);
++			}
+ 			for (int i = 0; i < gl_nrint; ++i) {
+ 				if (gl_rintent[i].id == p2) {
+-					gl_rintent[i].used = 0;
++					if (cmd == GC_RX_DONE_W_REUSE) {
++						gl_rintent[i].used = 0;
++					} else {
++						/* plain RX_DONE: the intent is gone, the modem advertises a new one */
++						gl_rintent[i] = gl_rintent[--gl_nrint];
++					}
++					break;
+ 				}
+ 			}
+ 			gl_rx_advance(8);
+ 			break;
+ 		case GC_RX_INTENT_REQ:
++			/* Linux qcom_glink_handle_intent_req(): the intent goes out before the ACK that grants it */
+ 			gl_rx_advance(8);
++			printf("SWEET GLINK: rx RX_INTENT_REQ cid %u size %u\n", p1, p2);
++			gl_advertise(p2);
+ 			gl_msg(GC_RX_INTENT_REQ_ACK, (uint16_t)GL_LCID, 1);
+-			gl_advertise();
+ 			break;
+ 		case GC_RX_INTENT_REQ_ACK:
+ 		case GC_READ_NOTIF:
+@@ -1003,6 +1041,17 @@ gl_poll(void)
+ #define QRTR_PORT_CTRL      0xfffffffeu
+ #define QRTR_LOCAL_NODE     1u
+ #define QRTR_BCAST          0xffffffffu
++/* services this side offers to the modem (see pdm_request, tftp_request) */
++#define PDM_SERVICE             0x40u
++#define PDM_INSTANCE            0x101u  /* qrtr_publish(64, version 257, instance 0) = instance << 8 | version: НЕ ПРОВЕРЕНО */
++#define PDM_PORT                0x4003u
++#define PDM_GET_DOMAIN_LIST     0x21u
++#define TFTP_SERVICE            0x1000u
++#define TFTP_INSTANCE           1u
++#define TFTP_PORT               0x4004u
++#define TFTP_XPORT              0x4010u         /* + client slot: each transfer answers from its own port */
++#define TFTP_NCLIENT            4
++#define TFTP_MAXBLK             7680u           /* largest modem intent seen is 8320 bytes (with 32 + 4 header bytes) */
+ 
+ static uint8_t qmi_rsp[4096];
+ static uint32_t qmi_rsp_len;
+@@ -1010,6 +1059,27 @@ static int qmi_rsp_ready;
+ 
+ static uint32_t qrtr_remote_node = QRTR_BCAST, qrtr_wlfw_node, qrtr_wlfw_port, qrtr_have_wlfw, qrtr_hello_sent;
+ 
++/* packets the GLINK fifo or the modem's intents could not take yet go out in order from qrtr_flush() */
++#define QRTR_TXQ        8
++static struct { uint32_t len; uint8_t b[8192]; } qrtr_txq[QRTR_TXQ];
++static unsigned qrtr_txq_head, qrtr_txq_n;
++
++static void
++qrtr_flush(void)
++{
++	while (qrtr_txq_n && !gl_send(qrtr_txq[qrtr_txq_head].b, qrtr_txq[qrtr_txq_head].len)) {
++		qrtr_txq_head = (qrtr_txq_head + 1) % QRTR_TXQ;
++		qrtr_txq_n--;
++	}
++}
++
++static int
++qrtr_txq_room(void)
++{
++	qrtr_flush();
++	return qrtr_txq_n < QRTR_TXQ - 2;       /* keep two slots for control and QMI replies */
++}
++
+ static int
+ qrtr_send(uint32_t type, uint32_t dst_node, uint32_t dst_port, uint32_t src_port, const void *payload, uint32_t plen)
+ {
+@@ -1022,7 +1092,17 @@ qrtr_send(uint32_t type, uint32_t dst_node, uint32_t dst_port, uint32_t src_port
+ 	if (plen) {
+ 		memcpy(pkt + 32, payload, plen);
+ 	}
+-	return gl_send(pkt, 32 + plen);
++	qrtr_flush();
++	if (!qrtr_txq_n && !gl_send(pkt, 32 + plen)) {
++		return 0;
++	}
++	if (qrtr_txq_n == QRTR_TXQ) {
++		return EAGAIN;
++	}
++	unsigned t = (qrtr_txq_head + qrtr_txq_n++) % QRTR_TXQ;
++	qrtr_txq[t].len = 32 + plen;
++	memcpy(qrtr_txq[t].b, pkt, 32 + plen);
++	return 0;
+ }
+ 
+ static void
+@@ -1037,6 +1117,18 @@ qrtr_rx(const uint8_t *pkt, uint32_t len)
+ 		rfs_request(h[2], h[3], pkt + 32, len - 32);
+ 		return;
+ 	}
++	if (h[1] == QRTR_TYPE_DATA && h[7] == PDM_PORT) {
++		pdm_request(h[2], h[3], pkt + 32, len - 32);
++		return;
++	}
++	if (h[1] == QRTR_TYPE_DATA && h[7] == TFTP_PORT) {
++		tftp_request(h[2], h[3], pkt + 32, len - 32);
++		return;
++	}
++	if (h[1] == QRTR_TYPE_DATA && h[7] >= TFTP_XPORT && h[7] < TFTP_XPORT + TFTP_NCLIENT) {
++		tftp_client_rx(h[7] - TFTP_XPORT, h[2], h[3], pkt + 32, len - 32);
++		return;
++	}
+ 	if (h[1] == QRTR_TYPE_NEW_LOOKUP) {
+ 		/* the modem looks for a service: answer with the one this side offers, then the end marker */
+ 		uint32_t srv[5] = {QRTR_TYPE_NEW_SERVER, 14u, 1, QRTR_LOCAL_NODE, 0x4001u};
+@@ -1061,6 +1153,10 @@ qrtr_rx(const uint8_t *pkt, uint32_t len)
+ 				return;
+ 			}
+ 		}
++		if (len - 32 >= 7 && pkt[32] == 4) {
++			wlfw_ind_rx(pkt + 32, len - 32);       /* an indication, not the answer qmi_call() waits for */
++			return;
++		}
+ 		printf("SWEET QRTR: rx data %u bytes from %u:%#x\n", len - 32, h[2], h[3]);
+ 		/* QMI message for our client port */
+ 		uint32_t n = len - 32 < sizeof(qmi_rsp) ? len - 32 : sizeof(qmi_rsp);
+@@ -1127,6 +1223,12 @@ qrtr_start(void)
+ #define WLFW_MSA_INFO           0x2d
+ #define WLFW_MSA_READY          0x2e
+ #define WLFW_CAP                0x24
++#define WLFW_BDF_DOWNLOAD       0x25
++#define WLFW_WLAN_MODE          0x22
++#define WLFW_WLAN_CFG           0x23
++#define WLFW_FW_READY_IND       0x21
++#define WLFW_MSA_READY_IND      0x2b
++#define WLFW_PIN_CONNECT_IND    0x2c
+ #define WLFW_CLIENT_ID          0x4b4e454cu
+ #define WLFW_MSA_PA             0x93900000ULL
+ #define WLFW_MSA_SZ             0x200000u
+@@ -1167,6 +1269,7 @@ qmi_call(uint16_t msg_id, const uint8_t *tlvs, uint16_t tlen, uint32_t *rlen, un
+ 	}
+ 	for (unsigned t = 0; t < timeout_ms / 10; ++t) {
+ 		gl_poll();
++		tftp_work();
+ 		if (qmi_rsp_ready) {
+ 			qmi_rsp_ready = 0;
+ 			uint16_t rid, rl;
+@@ -1451,6 +1554,7 @@ rfs_announce(uint32_t node)
+ {
+ 	uint32_t srv[5] = {QRTR_TYPE_NEW_SERVER, RFS_SERVICE, 1, QRTR_LOCAL_NODE, RFS_PORT};
+ 	qrtr_send(QRTR_TYPE_NEW_SERVER, node, QRTR_PORT_CTRL, QRTR_PORT_CTRL, srv, 20);
++	sm_announce_more(node);
+ }
+ 
+ static void
+@@ -1487,6 +1591,412 @@ qmi_result(const char *what, const uint8_t *r, uint32_t rlen)
+ 	return result ? EIO : 0;
+ }
+ 
++/* ---------------- QMI messages from the services this side offers ---------------- */
++static int
++qmi_send_msg(uint8_t type, uint32_t node, uint32_t port, uint32_t src_port, uint16_t txn, uint16_t msg,
++    const uint8_t *tlvs, uint16_t tlen)
++{
++	static uint8_t m[1024];
++	if (tlen > sizeof(m) - 7) {
++		return EINVAL;
++	}
++	m[0] = type;
++	memcpy(m + 1, &txn, 2);
++	memcpy(m + 3, &msg, 2);
++	memcpy(m + 5, &tlen, 2);
++	memcpy(m + 7, tlvs, tlen);
++	return qrtr_send(QRTR_TYPE_DATA, node, port, src_port, m, 7u + tlen);
++}
++
++/*
++ * ---------------- pd-mapper: the service-registry locator (QMI service 0x40) ----------------
++ * The modem starts its WLAN protection domain (wlan_pd, which runs the WLFW service 0x45) only after the
++ * apps side answers "where does wlan/fw live". Linux: linux-msm/pd-mapper. Table from MODEMR.JSN and
++ * MODEMUW.JSN of the modem partition (qmi_instance_id 180).
++ */
++
++static const struct { const char *service, *domain; uint32_t instance; } pdm_map[] = {
++	{"tms/servreg", "msm/modem/root_pd", 180}, {"tms/pdr_enabled", "msm/modem/root_pd", 180},
++	{"gps/gps_service", "msm/modem/root_pd", 180}, {"kernel/elf_loader", "msm/modem/wlan_pd", 180},
++	{"tms/servreg", "msm/modem/wlan_pd", 180}, {"wlan/fw", "msm/modem/wlan_pd", 180},
++};
++
++static void
++pdm_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
++{
++	if (qlen < 7 || q[0] != 0) {
++		return;
++	}
++	uint16_t txn, msg, tlen;
++	memcpy(&txn, q + 1, 2);
++	memcpy(&msg, q + 3, 2);
++	memcpy(&tlen, q + 5, 2);
++	if (7u + tlen > qlen) {
++		tlen = (uint16_t)(qlen - 7);
++	}
++	static uint8_t r[512];
++	uint32_t o = 0;
++	uint16_t res[2] = {0, 0};
++	char name[66] = {0};
++	uint16_t nl = 0;
++	const uint8_t *n = qmi_find(q + 7, tlen, 0x01, &nl);
++	if (msg != PDM_GET_DOMAIN_LIST || !n) {
++		printf("SWEET PDM: message %#x from %u:%#x not handled\n", msg, node, port);
++		res[0] = 1;
++		res[1] = msg != PDM_GET_DOMAIN_LIST ? 0x5e : 2;       /* QMI_ERR_NOT_SUPPORTED / MALFORMED_MSG */
++		o = qmi_tlv(r, 0, 0x02, res, 4);
++		qmi_send_msg(2, node, port, PDM_PORT, txn, msg, r, (uint16_t)o);
++		return;
++	}
++	memcpy(name, n, nl < 65 ? nl : 65);
++	uint16_t total = 0, rev = 1;
++	uint8_t list[400];
++	uint32_t lo = 1;
++	for (uint32_t i = 0; i < sizeof(pdm_map) / sizeof(pdm_map[0]); ++i) {
++		if (strcmp(pdm_map[i].service, name)) {
++			continue;
++		}
++		uint8_t dl = (uint8_t)strlen(pdm_map[i].domain), zero = 0;
++		uint32_t zero4 = 0;
++		list[lo++] = dl;                                       /* string inside a struct: u8 length + bytes */
++		memcpy(list + lo, pdm_map[i].domain, dl);
++		lo += dl;
++		memcpy(list + lo, &pdm_map[i].instance, 4);
++		lo += 4;
++		list[lo++] = zero;                                     /* service_data_valid */
++		memcpy(list + lo, &zero4, 4);                          /* service_data */
++		lo += 4;
++		total++;
++	}
++	list[0] = (uint8_t)total;
++	printf("SWEET PDM: '%s' from %u:%#x -> %u domain(s)\n", name, node, port, total);
++	o = qmi_tlv(r, 0, 0x02, res, 4);
++	o = qmi_tlv(r, o, 0x10, &total, 2);
++	o = qmi_tlv(r, o, 0x11, &rev, 2);
++	if (total) {
++		o = qmi_tlv(r, o, 0x12, list, (uint16_t)lo);
++	}
++	qmi_send_msg(2, node, port, PDM_PORT, txn, msg, r, (uint16_t)o);
++}
++
++/*
++ * ---------------- TFTP over QRTR (service 4096): the modem reads WLANMDSP.MBN and friends ----------------
++ * Behaviour of linux-msm/tqftpserv: options blksize/timeoutms/tsize/wsize/rsize/seek, OACK, the client ACKs
++ * block 0, then windows of wsize blocks; with rsize the client reads rsize bytes from seek and stops.
++ * Reads come from SM_FW_DIR (upper-case 8.3 names copied from the modem partition); writes are acknowledged
++ * and dropped.
++ */
++#define TFTP_RRQ                1
++#define TFTP_WRQ                2
++#define TFTP_DATA               3
++#define TFTP_ACK                4
++#define TFTP_ERROR              5
++#define TFTP_OACK               6
++
++static struct {
++	int used, writer, sending;
++	uint32_t node, port;
++	vnode_t vp;
++	uint64_t fsize, seek;
++	uint32_t blksize, wsize, rsize;
++	uint32_t blk, blk_end;          /* reader: next window is blocks blk+1 .. blk_end */
++	uint64_t sent;
++	char name[48];
++} tftp_cl[TFTP_NCLIENT];
++static uint8_t tftp_buf[TFTP_MAXBLK + 4];
++
++static void
++tftp_error(uint32_t node, uint32_t port, uint32_t src_port, uint16_t code, const char *msg)
++{
++	uint8_t b[64] = {0, TFTP_ERROR, (uint8_t)(code >> 8), (uint8_t)code};
++	size_t l = strlen(msg) < 58 ? strlen(msg) : 58;
++	memcpy(b + 4, msg, l);
++	b[4 + l] = 0;
++	qrtr_send(QRTR_TYPE_DATA, node, port, src_port, b, (uint32_t)(5 + l));
++}
++
++static void
++tftp_close(int i)
++{
++	if (tftp_cl[i].vp) {
++		vnode_put(tftp_cl[i].vp);
++	}
++	printf("SWEET TFTP: %s done, %llu bytes\n", tftp_cl[i].name, tftp_cl[i].sent);
++	memset(&tftp_cl[i], 0, sizeof(tftp_cl[i]));
++}
++
++/* "/readonly/firmware/image/wlanmdsp.mbn" -> SM_FW_DIR "WLANMDSP.MBN" */
++static int
++tftp_open(const char *path, vnode_t *vpp, uint64_t *size)
++{
++	static const char *const prefix[] = {"/readonly/firmware/image/", "/readonly/vendor/firmware_mnt/image/",
++		                             "/readonly/vendor/firmware/image/"};
++	const char *base = NULL;
++	for (unsigned i = 0; i < sizeof(prefix) / sizeof(prefix[0]) && !base; ++i) {
++		if (!strncmp(path, prefix[i], strlen(prefix[i]))) {
++			base = path + strlen(prefix[i]);
++		}
++	}
++	if (!base || !*base || strchr(base, '/') || strlen(base) > 31) {
++		return ENOENT;
++	}
++	char up[32];
++	size_t n = strlen(base);
++	for (size_t i = 0; i <= n; ++i) {
++		up[i] = (base[i] >= 'a' && base[i] <= 'z') ? (char)(base[i] - 32) : base[i];
++	}
++	int e = sm_open(up, vpp);
++	if (e) {
++		return e;
++	}
++	struct vnode_attr va;
++	VATTR_INIT(&va);
++	VATTR_WANTED(&va, va_data_size);
++	e = vnode_getattr(*vpp, &va, vfs_context_kernel());
++	if (e) {
++		vnode_put(*vpp);
++		*vpp = NULLVP;
++		return e;
++	}
++	*size = va.va_data_size;
++	return 0;
++}
++
++static uint32_t
++tftp_num(const char *s)
++{
++	uint32_t v = 0;
++	while (*s >= '0' && *s <= '9') {
++		v = v * 10 + (uint32_t)(*s++ - '0');
++	}
++	return v;
++}
++
++static uint32_t
++tftp_opt(uint8_t *b, uint32_t o, const char *k, uint64_t v)
++{
++	size_t kl = strlen(k) + 1;
++	memcpy(b + o, k, kl);
++	o += (uint32_t)kl;
++	o += (uint32_t)snprintf((char *)b + o, 24, "%llu", v) + 1;
++	return o;
++}
++
++static void
++tftp_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
++{
++	if (qlen < 4 || q[0] != 0 || (q[1] != TFTP_RRQ && q[1] != TFTP_WRQ)) {
++		return;
++	}
++	const char *p = (const char *)q + 2, *end = (const char *)q + qlen;
++	const char *file = p;
++	size_t fl = strnlen(file, (size_t)(end - p));
++	if (p + fl >= end) {
++		return;
++	}
++	p += fl + 1;
++	const char *mode = p;
++	size_t ml = strnlen(mode, (size_t)(end - p));
++	if (p + ml >= end) {
++		return;
++	}
++	p += ml + 1;
++	int writer = q[1] == TFTP_WRQ, have_opts = p < end, want_tsize = 0, have_seek = 0;
++	uint32_t blksize = 512, wsize = 1, rsize = 0, timeoutms = 1000;
++	uint64_t seek = 0;
++	while (p < end) {
++		const char *k = p;
++		size_t kl = strnlen(k, (size_t)(end - p));
++		if (p + kl >= end) {
++			break;
++		}
++		const char *v = p + kl + 1;
++		size_t vl = strnlen(v, (size_t)(end - v));
++		if (v + vl >= end) {
++			break;
++		}
++		p = v + vl + 1;
++		if (!strcmp(k, "blksize")) {
++			blksize = tftp_num(v);
++		} else if (!strcmp(k, "timeoutms")) {
++			timeoutms = tftp_num(v);
++		} else if (!strcmp(k, "tsize")) {
++			want_tsize = 1;
++		} else if (!strcmp(k, "rsize")) {
++			rsize = tftp_num(v);
++		} else if (!strcmp(k, "wsize")) {
++			wsize = tftp_num(v);
++		} else if (!strcmp(k, "seek")) {
++			seek = tftp_num(v);
++			have_seek = 1;
++		}
++	}
++	if (blksize < 8 || blksize > TFTP_MAXBLK) {
++		blksize = blksize < 8 ? 512 : TFTP_MAXBLK;      /* RFC 2348: the server may answer a smaller blksize */
++	}
++	if (!wsize || wsize > 64) {
++		wsize = 1;
++	}
++	int i = 0;
++	while (i < TFTP_NCLIENT && tftp_cl[i].used) {
++		++i;
++	}
++	printf("SWEET TFTP: %s '%s' blksize %u wsize %u rsize %u seek %llu from %u:%#x\n", writer ? "WRQ" : "RRQ", file,
++	    blksize, wsize, rsize, seek, node, port);
++	if (i == TFTP_NCLIENT) {
++		tftp_error(node, port, TFTP_PORT, 0, "Resources temporarily unavailable");
++		return;
++	}
++	vnode_t vp = NULLVP;
++	uint64_t size = 0;
++	if (!writer) {
++		int e = tftp_open(file, &vp, &size);
++		if (e) {
++			printf("SWEET TFTP: '%s' not found (%d)\n", file, e);
++			tftp_error(node, port, TFTP_PORT, 1, "file not found");
++			return;
++		}
++	}
++	tftp_cl[i].used = 1;
++	tftp_cl[i].writer = writer;
++	tftp_cl[i].node = node;
++	tftp_cl[i].port = port;
++	tftp_cl[i].vp = vp;
++	tftp_cl[i].fsize = size;
++	tftp_cl[i].seek = seek;
++	tftp_cl[i].blksize = blksize;
++	tftp_cl[i].wsize = wsize;
++	tftp_cl[i].rsize = rsize;
++	tftp_cl[i].sent = 0;
++	strlcpy(tftp_cl[i].name, file, sizeof(tftp_cl[i].name));
++	if (have_opts) {
++		/* tqftpserv tftp_send_oack(): blksize, timeoutms, tsize (when asked), wsize, rsize (when set), seek (when set) */
++		uint8_t b[160] = {0, TFTP_OACK};
++		uint32_t o = 2;
++		o = tftp_opt(b, o, "blksize", blksize);
++		o = tftp_opt(b, o, "timeoutms", timeoutms);
++		if (want_tsize && !writer) {
++			o = tftp_opt(b, o, "tsize", size);
++		}
++		o = tftp_opt(b, o, "wsize", wsize);
++		if (rsize) {
++			o = tftp_opt(b, o, "rsize", rsize);
++		}
++		if (have_seek) {
++			o = tftp_opt(b, o, "seek", seek);
++		}
++		qrtr_send(QRTR_TYPE_DATA, node, port, TFTP_XPORT + (uint32_t)i, b, o);
++	} else if (writer) {
++		uint8_t a[4] = {0, TFTP_ACK, 0, 0};
++		qrtr_send(QRTR_TYPE_DATA, node, port, TFTP_XPORT + (uint32_t)i, a, 4);
++	} else {
++		tftp_cl[i].blk = 0;             /* no options: block 1 goes out without waiting for an ACK */
++		tftp_cl[i].blk_end = 1;
++		tftp_cl[i].sending = 1;
++	}
++}
++
++/* a packet to one transfer's port: ACKs for a reader, DATA for a writer */
++static void
++tftp_client_rx(uint32_t slot, uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
++{
++	if (slot >= TFTP_NCLIENT || !tftp_cl[slot].used || tftp_cl[slot].node != node || tftp_cl[slot].port != port ||
++	    qlen < 4) {
++		return;
++	}
++	uint16_t op = (uint16_t)(q[0] << 8 | q[1]), blk = (uint16_t)(q[2] << 8 | q[3]);
++	if (op == TFTP_ERROR) {
++		printf("SWEET TFTP: %s: client error %u\n", tftp_cl[slot].name, blk);
++		tftp_close((int)slot);
++		return;
++	}
++	if (tftp_cl[slot].writer) {
++		if (op != TFTP_DATA) {
++			return;
++		}
++		uint8_t a[4] = {0, TFTP_ACK, q[2], q[3]};
++		tftp_cl[slot].sent += qlen - 4;
++		qrtr_send(QRTR_TYPE_DATA, node, port, TFTP_XPORT + slot, a, 4);
++		if (qlen - 4 < tftp_cl[slot].blksize) {
++			tftp_close((int)slot);
++		}
++		return;
++	}
++	if (op != TFTP_ACK) {
++		tftp_error(node, port, TFTP_XPORT + slot, 4, "Expected ACK opcode");
++		tftp_close((int)slot);
++		return;
++	}
++	/* tqftpserv handle_reader() */
++	uint64_t bs = tftp_cl[slot].blksize;
++	if (tftp_cl[slot].rsize ? (uint64_t)blk * bs > tftp_cl[slot].rsize :
++	    (blk && (uint64_t)blk * bs > tftp_cl[slot].fsize)) {
++		tftp_close((int)slot);
++		return;
++	}
++	tftp_cl[slot].blk = blk;
++	tftp_cl[slot].blk_end = blk + tftp_cl[slot].wsize;
++	tftp_cl[slot].sending = 1;
++}
++
++static int qrtr_txq_room(void);
++
++static int
++tftp_busy(void)
++{
++	for (int i = 0; i < TFTP_NCLIENT; ++i) {
++		if (tftp_cl[i].used) {
++			return 1;
++		}
++	}
++	return 0;
++}
++
++/* send what the readers owe, as far as the QRTR queue has room; called from the watch loop and QMI waits */
++static void
++tftp_work(void)
++{
++	for (int i = 0; i < TFTP_NCLIENT; ++i) {
++		while (tftp_cl[i].used && tftp_cl[i].sending && qrtr_txq_room()) {
++			uint32_t b = tftp_cl[i].blk;
++			uint64_t bs = tftp_cl[i].blksize, off = tftp_cl[i].seek + (uint64_t)b * bs;
++			uint64_t want = bs, last = 0;
++			if (tftp_cl[i].rsize && (uint64_t)(b + 1) * bs > tftp_cl[i].rsize) {
++				want = tftp_cl[i].rsize % bs;      /* tqftpserv: response_size 0 means a whole block */
++				want = want ? want : bs;
++				last = 1;
++			}
++			uint64_t have = off < tftp_cl[i].fsize ? tftp_cl[i].fsize - off : 0;
++			uint32_t n = (uint32_t)(want < have ? want : have);
++			tftp_buf[0] = 0;
++			tftp_buf[1] = TFTP_DATA;
++			tftp_buf[2] = (uint8_t)((b + 1) >> 8);
++			tftp_buf[3] = (uint8_t)(b + 1);
++			if (n && sm_pread(tftp_cl[i].vp, tftp_buf + 4, n, (off_t)off)) {
++				tftp_error(tftp_cl[i].node, tftp_cl[i].port, TFTP_XPORT + (uint32_t)i, 0, "Read error");
++				tftp_close(i);
++				break;
++			}
++			qrtr_send(QRTR_TYPE_DATA, tftp_cl[i].node, tftp_cl[i].port, TFTP_XPORT + (uint32_t)i, tftp_buf, 4 + n);
++			tftp_cl[i].sent += n;
++			tftp_cl[i].blk = ++b;
++			if (last || n < bs || b >= tftp_cl[i].blk_end) {
++				tftp_cl[i].sending = 0;
++			}
++		}
++	}
++}
++
++/* NEW_SERVER for every service this side offers (rmtfs is announced by rfs_announce) */
++static void
++sm_announce_more(uint32_t node)
++{
++	uint32_t pdm[5] = {QRTR_TYPE_NEW_SERVER, PDM_SERVICE, PDM_INSTANCE, QRTR_LOCAL_NODE, PDM_PORT};
++	uint32_t tftp[5] = {QRTR_TYPE_NEW_SERVER, TFTP_SERVICE, TFTP_INSTANCE, QRTR_LOCAL_NODE, TFTP_PORT};
++	qrtr_send(QRTR_TYPE_NEW_SERVER, node, QRTR_PORT_CTRL, QRTR_PORT_CTRL, pdm, 20);
++	qrtr_send(QRTR_TYPE_NEW_SERVER, node, QRTR_PORT_CTRL, QRTR_PORT_CTRL, tftp, 20);
++}
++
+ extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ 
+ /* WCN3990 supplies as icnss_hw_power_on() lists them (vdd-cx-mx, 1.8 xo, 1.3 rfa, 3.3 ch0; ch1 = L11C is already up) */
+@@ -1503,6 +2013,170 @@ wlan_power_on(void)
+ 	}
+ }
+ 
++/* indications from WLFW (Linux ath10k_qmi_msg_handler) */
++static volatile int wlfw_fw_ready, wlfw_msa_ready_ind;
++
++static void
++wlfw_ind_rx(const uint8_t *q, uint32_t qlen)
++{
++	uint16_t id;
++	memcpy(&id, q + 3, 2);
++	printf("SWEET WLFW: indication %#x (%u bytes)\n", id, qlen);
++	if (id == WLFW_FW_READY_IND) {
++		wlfw_fw_ready = 1;
++	} else if (id == WLFW_MSA_READY_IND) {
++		wlfw_msa_ready_ind = 1;
++	}
++}
++
++/* ath10k_qmi_bdf_dnld_send_sync(): the board file in 6144-byte segments. icnss (Android) does not send it:
++ * the WLAN firmware reads bdwlan itself over TFTP. Boot-arg sweetwlbdf=1 sends it the ath10k way. */
++static void
++wlfw_bdf_download(uint32_t board_id)
++{
++	char name[16];
++	vnode_t vp = NULLVP;
++	snprintf(name, sizeof(name), "BDWLAN.B%02X", board_id & 0xff);
++	if (board_id == 0xff || sm_open(name, &vp)) {
++		strlcpy(name, "BDWLAN.BIN", sizeof(name));
++		if (sm_open(name, &vp)) {
++			printf("SWEET WLFW: no board file\n");
++			return;
++		}
++	}
++	struct vnode_attr va;
++	VATTR_INIT(&va);
++	VATTR_WANTED(&va, va_data_size);
++	uint32_t total = vnode_getattr(vp, &va, vfs_context_kernel()) ? 0 : (uint32_t)va.va_data_size;
++	static uint8_t t[6144 + 64];
++	uint32_t seg = 0, rl = 0;
++	for (uint32_t off = 0; off < total; ++seg) {
++		uint16_t n = (uint16_t)(total - off > 6144 ? 6144 : total - off);
++		uint8_t one = 1, end = off + n >= total;
++		uint32_t fid = 0, o = 0;
++		o = qmi_tlv(t, o, 0x01, &one, 1);
++		o = qmi_tlv(t, o, 0x10, &fid, 4);
++		o = qmi_tlv(t, o, 0x11, &total, 4);
++		o = qmi_tlv(t, o, 0x12, &seg, 4);
++		/* data: u16 length then the bytes */
++		t[o] = 0x13;
++		uint16_t dl = (uint16_t)(n + 2);
++		memcpy(t + o + 1, &dl, 2);
++		memcpy(t + o + 3, &n, 2);
++		if (sm_pread(vp, t + o + 5, n, (off_t)off)) {
++			break;
++		}
++		o += 5u + n;
++		o = qmi_tlv(t, o, 0x14, &end, 1);
++		const uint8_t *r = qmi_call(WLFW_BDF_DOWNLOAD, t, (uint16_t)o, &rl, 5000);
++		if (qmi_result(end ? "bdf (last segment)" : "bdf", r, rl) && !end) {
++			break;
++		}
++		off += n;
++	}
++	printf("SWEET WLFW: %s, %u bytes, %u segment(s)\n", name, total, seg);
++	vnode_put(vp);
++}
++
++/* ath10k_snoc_wlan_enable() tables for WCN3990 (drivers/net/wireless/ath/ath10k/snoc.c) */
++static const uint32_t wlfw_ce_tgt[12][5] = {    /* pipe, dir (1 in, 2 out, 3 inout), entries, max bytes, flags */
++	{0, 2, 32, 2048, 0}, {1, 1, 32, 2048, 0}, {2, 1, 64, 2048, 0}, {3, 2, 32, 2048, 0},
++	{4, 2, 256, 256, 8}, {5, 2, 1024, 64, 8}, {6, 3, 32, 16384, 0}, {7, 4, 0, 0, 8},
++	{8, 1, 32, 2048, 0}, {9, 1, 32, 2048, 0}, {10, 1, 32, 2048, 0}, {11, 1, 32, 2048, 0},
++};
++static const uint32_t wlfw_ce_svc[21][3] = {    /* HTC service, dir, pipe; the zero entry is sent too */
++	{0x104, 2, 3}, {0x104, 1, 2}, {0x102, 2, 3}, {0x102, 1, 2}, {0x101, 2, 3}, {0x101, 1, 2},
++	{0x103, 2, 3}, {0x103, 1, 2}, {0x100, 2, 3}, {0x100, 1, 2}, {0x001, 2, 0}, {0x001, 1, 2},
++	{0xfe00, 2, 0}, {0xfe00, 1, 2}, {0x300, 2, 4}, {0x300, 1, 1}, {0xfe00, 2, 5}, {0x301, 1, 9},
++	{0x302, 1, 10}, {0x600, 1, 11}, {0, 0, 0},
++};
++static const uint16_t wlfw_shadow[12][2] = {    /* CE, register (0x3c source write index, 0x40 dest write index) */
++	{0, 0x3c}, {3, 0x3c}, {4, 0x3c}, {5, 0x3c}, {7, 0x3c},
++	{1, 0x40}, {2, 0x40}, {7, 0x40}, {8, 0x40}, {9, 0x40}, {10, 0x40}, {11, 0x40},
++};
++
++static int
++wlfw_wlan_enable(void)
++{
++	static uint8_t t[1024], v[512];
++	uint32_t o = 0, rl = 0;
++	v[0] = 12;
++	memcpy(v + 1, wlfw_ce_tgt, sizeof(wlfw_ce_tgt));
++	o = qmi_tlv(t, o, 0x11, v, (uint16_t)(1 + sizeof(wlfw_ce_tgt)));
++	v[0] = 21;
++	memcpy(v + 1, wlfw_ce_svc, sizeof(wlfw_ce_svc));
++	o = qmi_tlv(t, o, 0x12, v, (uint16_t)(1 + sizeof(wlfw_ce_svc)));
++	v[0] = 12;
++	memcpy(v + 1, wlfw_shadow, sizeof(wlfw_shadow));
++	o = qmi_tlv(t, o, 0x13, v, (uint16_t)(1 + sizeof(wlfw_shadow)));
++	const uint8_t *r = qmi_call(WLFW_WLAN_CFG, t, (uint16_t)o, &rl, 5000);
++	if (qmi_result("wlan_cfg", r, rl)) {
++		return EIO;
++	}
++	uint32_t mode = 0;                      /* QMI_WLFW_MISSION_V01 */
++	uint8_t dbg = 0;
++	o = qmi_tlv(t, 0, 0x01, &mode, 4);
++	o = qmi_tlv(t, o, 0x10, &dbg, 1);
++	r = qmi_call(WLFW_WLAN_MODE, t, (uint16_t)o, &rl, 5000);
++	return qmi_result("wlan_mode mission", r, rl) ? EIO : 0;
++}
++
++/*
++ * Read-only look at the apps SMMU (qcom,qsmmu-v500 @ 0x15000000) for the WLAN stream (iommus = <&apps_smmu 0xc0 0x1>):
++ * does a stream-match register already route SID 0xc0, and to bypass, fault or a context bank? The copy engine
++ * DMA (next step) depends on it. Boot-arg sweetwlsmmu=0 skips it.
++ */
++#define SMMU_PA         0x15000000ULL
++static void
++wlan_smmu_probe(void)
++{
++	uint32_t on = 1;
++	(void)PE_parse_boot_argn("sweetwlsmmu", &on, sizeof(on));
++	if (!on) {
++		return;
++	}
++	vm_offset_t g = ml_io_map(SMMU_PA, 0x1000);
++	if (!g) {
++		return;
++	}
++	uint32_t cr0 = sm_r32(g + 0x0), idr0 = sm_r32(g + 0x20), idr1 = sm_r32(g + 0x24);
++	uint32_t nsmr = idr0 & 0xff, ncb = idr1 & 0xff;
++	printf("SWEET WLSMMU: sCR0 %#x IDR0 %#x IDR1 %#x (%u SMRs, %u context banks)\n", cr0, idr0, idr1, nsmr, ncb);
++	for (uint32_t i = 0; i < nsmr && i < 128; ++i) {
++		uint32_t smr = sm_r32(g + 0x800 + 4 * i), s2cr = sm_r32(g + 0xc00 + 4 * i);
++		uint32_t id = smr & 0xffff, mask = (smr >> 16) & 0x7fff;
++		if ((smr & 0x80000000u) && ((id ^ 0xc0u) & ~mask & 0x7fffu) == 0) {
++			printf("SWEET WLSMMU: SMR%u %#x -> S2CR %#x (type %u, cb %u)\n", i, smr, s2cr, (s2cr >> 16) & 3,
++			    s2cr & 0xff);
++		}
++	}
++}
++
++static void
++wlfw_after_cap(uint32_t board_id)
++{
++	uint32_t bdf = 0;
++	(void)PE_parse_boot_argn("sweetwlbdf", &bdf, sizeof(bdf));
++	if (bdf) {
++		wlfw_bdf_download(board_id);
++	}
++	/* the firmware says FW_READY when it is up; meanwhile the modem may still read files over TFTP */
++	for (unsigned ms = 0; !wlfw_fw_ready && ms < 60000; ms += 10) {
++		gl_poll();
++		tftp_work();
++		touch_wait(10);
++	}
++	if (!wlfw_fw_ready) {
++		printf("SWEET WLFW: no FW_READY in 60 s\n");
++		return;
++	}
++	printf("SWEET WLFW: FW_READY\n");
++	if (!wlfw_wlan_enable()) {
++		printf("SWEET WLFW: WLAN firmware in mission mode, copy engine is next\n");
++	}
++	wlan_smmu_probe();
++}
++
+ static void
+ wlfw_bringup(void)
+ {
+@@ -1521,6 +2195,16 @@ wlfw_bringup(void)
+ 	if (qmi_result("ind_register", r, rl)) {
+ 		return;
+ 	}
++	uint16_t fl = 0;
++	const uint8_t *fs = qmi_find(r, rl, 0x10, &fl);
++	if (fs && fl >= 8) {
++		uint64_t st;
++		memcpy(&st, fs, 8);
++		printf("SWEET WLFW: fw_status %#llx\n", st);
++		if (st & 2) {                           /* QMI_WLFW_FW_READY_V01: a warm start, the firmware is already up */
++			wlfw_fw_ready = 1;
++		}
++	}
+ 
+ 	uint64_t pa = WLFW_MSA_PA;
+ 	uint32_t sz = WLFW_MSA_SZ;
+@@ -1546,6 +2230,7 @@ wlfw_bringup(void)
+ 	r = qmi_call(WLFW_MSA_READY, t, 0, &rl, 5000);
+ 	qmi_result("msa_ready", r, rl);
+ 
++	uint32_t board = 0xff;
+ 	r = qmi_call(WLFW_CAP, t, 0, &rl, 5000);
+ 	if (!qmi_result("cap", r, rl)) {
+ 		uint16_t l;
+@@ -1561,6 +2246,7 @@ wlfw_bringup(void)
+ 			uint32_t b;
+ 			memcpy(&b, bi, 4);
+ 			printf("SWEET WLFW: board id %#x\n", b);
++			board = b;
+ 		}
+ 		const uint8_t *fw = qmi_find(r, rl, 0x13, &l);
+ 		if (fw && l >= 4) {
+@@ -1569,6 +2255,7 @@ wlfw_bringup(void)
+ 			printf("SWEET WLFW: fw version %#x\n", v);
+ 		}
+ 	}
++	wlfw_after_cap(board);
+ }
+ 
+ static void
+@@ -1589,7 +2276,8 @@ sm_watch(void)
+ 	sm_smem_dump();
+ 	sm_smp2p_setup();
+ 	int gl_started = 0;
+-	for (unsigned t = 0; t < 1200; ++t) {
++	/* once GLINK is up the loop keeps serving the modem (rmtfs, pd-mapper, TFTP) for good */
++	for (unsigned t = 0; t < 1200 || gl_started; ++t) {
+ 		sm_smp2p_poll();
+ 		if (!gl_started && sm_p2p_in) {
+ 			gl_started = (gl_setup() == 0);
+@@ -1610,11 +2298,23 @@ sm_watch(void)
+ 			sm_kick(SM_IPC_SMP2P);
+ 			sm_kick(SM_IPC_GLINK);
+ 		}
+-		if (t % 100 == 50) {
++		if (t % 100 == 50 && t < 3000) {
+ 			printf("SWEET GLINK: t=%u desc tx tail %u head %u rx tail %u head %u\n", t, sm_r32(GL_TX_TAIL),
+ 			    sm_r32(GL_TX_HEAD), sm_r32(GL_RX_TAIL), sm_r32(GL_RX_HEAD));
+ 		}
+-		touch_wait(100);
++		if (gl_started && tftp_busy()) {
++			/* a file transfer is running: poll every 2 ms instead of every 100 ms */
++			for (unsigned k = 0; k < 50; ++k) {
++				gl_poll();
++				tftp_work();
++				touch_wait(2);
++			}
++		} else {
++			if (gl_started) {
++				qrtr_flush();
++			}
++			touch_wait(100);
++		}
+ 	}
+ 	printf("SWEET MODEM: watch done\n");
+ }

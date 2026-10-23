@@ -1,5 +1,23 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-23: Wi-Fi (WCN3990) firmware bring-up - patch 0105, NOT built or booted yet
+- Observed (logs/boot-modem17.txt, older code): modem up, GLINK IPCRTR open, QRTR HELLO both ways, modem announced
+  only services 0x42 (servreg notifier) and 0x2b, then nothing; WLFW (0x45) never appeared. Newest logs (modem-v99*)
+  fail earlier: AUTH_AND_RESET x0=0xffcfffb9 (modem start itself still unreliable, see 0099/0102/0103).
+- Guess (not verified): the modem starts wlan_pd only after the apps side answers the servreg locator (pd-mapper,
+  service 0x40) and serves WLANMDSP.MBN over TFTP (service 4096), as on sdm845 Linux. MODEMUW.JSN: wlan_pd,
+  qmi_instance_id 180, services kernel/elf_loader, tms/servreg, wlan/fw.
+- 0105 (bsd/dev/sweet_modem.inc): GLINK intents per Linux (INTENT before RX_INTENT_REQ_ACK, 64 remote intents,
+  smallest fit, plain RX_DONE drops the intent, 4 x 8 KiB local intents); QRTR send queue; pd-mapper (port 0x4003,
+  instance 0x101 - НЕ ПРОВЕРЕНО); TFTP server like tqftpserv (port 0x4004, reads SM_FW_DIR upper-case names, writes
+  dropped); WLFW: indications, fw_status, wait FW_READY (60 s), wlan_cfg (ath10k snoc CE/svc/shadow tables) +
+  wlan_mode MISSION; read-only apps SMMU dump for SID 0xc0. Watch loop no longer stops after 120 s.
+  Boot-args: sweetwlbdf=1 (BDF over QMI like ath10k; default off like icnss), sweetwlsmmu=0.
+- tools/miatoll-live-tweaks.py copies all BDWLAN.* now (board-id variants).
+- Log keys to check: SWEET PDM, SWEET TFTP, "server service 0x45", SWEET WLFW, SWEET WLSMMU.
+- Next after FW_READY + mission mode: copy engine / HTC (ath10k ce.c, snoc.c) - needs the SMMU answer first
+  (DMA addresses are IOVAs if SID 0xc0 is translated).
+
 ## Handoff 2026-10-22 (night): real time, real battery, faster panel copy - patch 0093, NOT built or booted yet
 
 `xnu/patches/0093-miatoll-real-time-battery-fast-present.patch` (made as a diff against the tree after 0001..0092; `git apply --check`
