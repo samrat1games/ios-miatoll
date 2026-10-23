@@ -1,0 +1,117 @@
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index b0b8de4..a5117c6 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -17,6 +17,7 @@
+ #include <IOKit/pwr_mgt/IOPMPowerSource.h>
+ #include <libkern/c++/OSCollectionIterator.h>
+ #include <pexpert/pexpert.h>
++#include <kern/clock.h>
+ /* bsd/dev/sweet_spmi.c */
+ extern "C" int sweet_spmi_init(void);
+ extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
+@@ -37,6 +38,8 @@ private:
+ 	unsigned fPolls;
+ 	unsigned fHold;
+ 	unsigned fBad;
++	int fMilli;             /* charge in thousandths of a percent (coulomb counted), -1 = no sample yet */
++	uint64_t fLastMs;
+ 	bool fHaveGood;
+ 	unsigned fLastKey;
+ 	void putNumber(const char *key, UInt32 value);
+@@ -49,6 +52,7 @@ private:
+ 	static bool readWord(unsigned address, uint16_t *value);
+ 	static unsigned estimatePercent(unsigned mv);
+ 	unsigned smooth(unsigned target, bool charging);
++	unsigned coulomb(unsigned target, bool charging, bool external, bool full, int ma, bool currentValid);
+ };
+ OSDefineMetaClassAndStructors(SweetBattery, IOPMPowerSource);
+ 
+@@ -88,6 +92,8 @@ SweetBattery::init(OSDictionary *dictionary)
+ 	fPolls = 0;
+ 	fHold = 0;
+ 	fBad = 0;
++	fMilli = -1;
++	fLastMs = 0;
+ 	fHaveGood = false;
+ 	fLastKey = 0xffffffffu;
+ 	return true;
+@@ -253,6 +259,62 @@ SweetBattery::smooth(unsigned target, bool charging)
+ 	return fShown;
+ }
+ 
++/*
++ * Charge by counting current, like a fuel gauge: the percentage moves by what flowed (capacity 5020 mAh), the
++ * direction coming from the charger state (the sign of the current register is not trusted), and is only
++ * pulled toward the voltage estimate slowly and while the phone is nearly idle. A battery that has just come
++ * off the charger rests from 4.43 V down to 4.35 V within minutes: that is no loss of charge, and a voltage-only
++ * percentage would show it as one.
++ */
++unsigned
++SweetBattery::coulomb(unsigned target, bool charging, bool external, bool full, int ma, bool currentValid)
++{
++	clock_sec_t sec;
++	clock_usec_t usec;
++	clock_get_system_microtime(&sec, &usec);
++	uint64_t ms = (uint64_t)sec * 1000 + usec / 1000;
++	unsigned dt = fLastMs ? (unsigned)((ms - fLastMs) / 1000) : 0;
++	fLastMs = ms;
++	if (dt > 120) {
++		dt = 120;
++	}
++	if (full) {
++		fMilli = 100000;
++	} else if (fMilli < 0 || !currentValid) {
++		unsigned p = smooth(target, charging);
++		fMilli = (int)p * 1000;
++		return p;
++	} else {
++		int mag = ma < 0 ? -ma : ma;
++		/* percent * 1000 = mA * s * 100000 / (5020 mAh * 3600 s) */
++		int delta = (int)(((int64_t)mag * dt * 100000) / (5020LL * 3600));
++		if (charging) {
++			fMilli += delta;
++			if (fMilli > 99000) {
++				fMilli = 99000;     /* 100 only when the charger says full */
++			}
++		} else if (!external) {
++			fMilli -= delta;
++		}
++		/* near idle the voltage is trustworthy: pull a twentieth of the gap per poll */
++		if (mag < 150 && !charging) {
++			fMilli += ((int)target * 1000 - fMilli) / 20;
++		}
++		/* far off (a different battery state than assumed): follow the voltage estimate quickly */
++		int gap = (int)target * 1000 - fMilli;
++		if (!charging && (gap > 15000 || gap < -15000) && mag < 400) {
++			fMilli += gap / 4;
++		}
++	}
++	if (fMilli < 0) {
++		fMilli = 0;
++	}
++	if (fMilli > 100000) {
++		fMilli = 100000;
++	}
++	return (unsigned)((fMilli + 500) / 1000);
++}
++
+ void
+ SweetBattery::poll(void)
+ {
+@@ -319,13 +381,8 @@ SweetBattery::poll(void)
+ 	if (ocv < 2800) {
+ 		ocv = 2800;
+ 	}
+-	unsigned percent = full ? 100 : smooth(estimatePercent((unsigned)ocv), charging);
+-	if (full) {
+-		fShown = 100;
+-	}
+-	if (fShown > 100) {
+-		fShown = 100;
+-	}
++	unsigned percent = coulomb(estimatePercent((unsigned)ocv), charging, external, full, ma, currentValid);
++	fShown = percent;
+ 	unsigned key = (percent << 2) | (external ? 2u : 0) | (charging ? 1u : 0);
+ 	if (key != fLastKey || (++fPolls % 30) == 0) {
+ 		IOLog("SWEET BATTERY: raw %umV %dmA(valid %d) usb %#x path %#x chg %#x err %#x temp %#x -> %u%% ocv %dmV\n",
