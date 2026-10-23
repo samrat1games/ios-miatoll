@@ -1,0 +1,20 @@
+diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -859,10 +859,15 @@
+ 
+ 	char line[200];
+ 	int n = snprintf(line, sizeof(line), "CRASH %s bt", name);
+-	for (int i = 0; i < 10 && fp != 0 && (fp & 7) == 0 && n < (int)sizeof(line) - 20; i++) {
++	/* 48 frames, 8 per line: the 10 printed before stopped inside CoreUI and never reached the caller */
++	for (int i = 0; i < 48 && fp != 0 && (fp & 7) == 0; i++) {
+ 		uint64_t frame[2];
+ 		if (copyin((user_addr_t)fp, frame, sizeof(frame)) != 0) {
+ 			break;
++		}
++		if (i && (i % 8) == 0) {
++			printf("%s\n", line);
++			n = snprintf(line, sizeof(line), "CRASH %s bt+%d", name, i);
+ 		}
+ 		n += snprintf(line + n, sizeof(line) - n, " 0x%llx", frame[1]);
+ 		if (frame[0] <= fp) {
