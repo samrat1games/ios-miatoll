@@ -1,5 +1,10 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-25 (later 2): 0132 backlight off with the display
+- miatoll is LCD + WLED: 0085's "black = off" (AMOLED sweet) left the backlight glowing when iOS sleeps the display.
+  0132: kSweetFBRequestPowerChange calls sweet_backlight_power() -> sm_bl_apply(0 / sm_bl_level). Uses 0120's owner
+  check (refuses if the WLED apid is not the apps processor's). Untested. Log: "SWEET BL: level 0 -> ...".
+
 ## Handoff 2026-10-25 (later): 0130 raw TFTP requests, 0131 power off
 - 0130: raw WLANMDSP RRQ bytes + non-request packets to the TFTP port are printed (0129 lost the re-probe in the UDP log).
 - 0131: PE_halt_restart (was NULL: "Turn off" left the phone powered with a black screen): kPEHaltCPU -> PON 0x5b=0,

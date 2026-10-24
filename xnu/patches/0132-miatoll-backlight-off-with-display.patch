@@ -1,0 +1,40 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 595d883..b5e7f0b 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3201,6 +3201,14 @@ sm_bl_apply(unsigned level)
+ 
+ static int sm_bl_level = 1072;
+ 
++/* the LCD's backlight follows the display power (SweetFramebuffer): black pixels alone still glow on miatoll */
++void sweet_backlight_power(int on);
++void
++sweet_backlight_power(int on)
++{
++	(void)sm_bl_apply(on ? (unsigned)sm_bl_level : 0);
++}
++
+ static int
+ sm_bl_sysctl SYSCTL_HANDLER_ARGS
+ {
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 30de756..224303c 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -54,6 +54,8 @@ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ #include <kern/clock.h>
+ #include <sys/proc.h>
+ 
++extern "C" void sweet_backlight_power(int on);   /* bsd/dev/sweet_modem.inc: LCD backlight off with the display */
++
+ enum {
+ 	kSweetFBGetLayerDefaultSurface  = 3,
+ 	kSweetFBSwapBegin               = 4,
+@@ -666,6 +668,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 			}
+ 			IOLockUnlock(fFB->fLock);
+ 			IOLog("SWEET FB: display %s\n", off ? "off" : "on");
++			sweet_backlight_power(!off);
+ 		}
+ 		break;
+ 	case kSweetFBSwapWait:
