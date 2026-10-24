@@ -1,5 +1,13 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-25 (later 7): FW_READY + MISSION MODE (0137); 0138 SMMU bypass bank
+- 0137 (run 40104433887): cal_report ok -> indications 0x2c (pin connect), 0x21 FW_READY; wlan_cfg ok; wlan_mode
+  mission ok. SMMU: sCR0 0x210406 (USFCFG=1), IDR0 0x4c017e47, IDR1 0x6000003d (71 SMRs, 61 banks), no SMR for 0xc0
+  -> unmatched stream faults -> copy engine not started.
+- 0138: qcom_smmu-style bypass: free SMR (top down, not valid) = valid|mask 1|id 0xc0, S2CR translate -> free bank
+  (CBAR 0 and SCTLR 0, top down), CBAR type 1, SCTLR 0; all read back. sweetwlsmmu=2 skips it. Untested: a write the
+  hypervisor refuses may fault. Next: copy engine / HTC READY (0108).
+
 ## Handoff 2026-10-25 (later 6): BDF sent (0136), still no FW_READY; 0137 cal report
 - 0136 + sweetwlbdf=1 (run 40103308604): BDWLAN.BIN 26328 bytes, 5 segments, all results 0, no panic. No FW_READY in 60 s.
 - 0137: WLFW_CAL_REPORT (0x26, TLV 0x01 meta_data count 0) after the BDF, like ath10k_qmi_send_cal_report_req();

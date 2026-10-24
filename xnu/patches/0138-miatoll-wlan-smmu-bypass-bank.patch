@@ -1,0 +1,74 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index de352e7..54a5f80 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2471,6 +2471,59 @@ wlfw_wlan_enable(void)
+  * DMA (next step) depends on it. Boot-arg sweetwlsmmu=0 skips it.
+  */
+ #define SMMU_PA         0x15000000ULL
++
++/*
++ * Linux qcom_smmu "bypass emulation" (arm-smmu-qcom.c): a context bank with translation off (SCTLR.M = 0, CBAR type
++ * S1-translate/S2-bypass) and a stream match for SID 0xc0 mask 0x1 that points to it, so the WCN3990 can DMA with
++ * physical addresses. Takes a free SMR (not valid) and a free bank (CBAR 0, SCTLR 0) from the top; every write is
++ * read back. Boot-arg sweetwlsmmu=2 skips this step.
++ */
++static int
++wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
++{
++	uint32_t on = 1;
++	(void)PE_parse_boot_argn("sweetwlsmmu", &on, sizeof(on));
++	if (on == 2) {
++		return 0;
++	}
++	uint32_t nsmr = idr0 & 0xff, ncb = idr1 & 0xff;
++	uint32_t pg = (idr1 & 0x80000000u) ? 0x10000u : 0x1000u;
++	uint32_t npage = 1u << (((idr1 >> 28) & 7) + 1);
++	uint32_t cbbase = npage * pg;
++	vm_offset_t g = ml_io_map(SMMU_PA, cbbase + ncb * pg);
++	if (!g || !nsmr || !ncb) {
++		return 0;
++	}
++	vm_offset_t g1 = g + pg;
++	int smr = -1, cb = -1;
++	for (int i = (int)nsmr - 1; i >= 0 && smr < 0; --i) {
++		if (!(sm_r32(g + 0x800 + 4 * (uint32_t)i) & 0x80000000u)) {
++			smr = i;
++		}
++	}
++	for (int i = (int)ncb - 1; i >= 0 && cb < 0; --i) {
++		if (!sm_r32(g1 + 4 * (uint32_t)i) && !sm_r32(g + cbbase + (uint32_t)i * pg)) {
++			cb = i;
++		}
++	}
++	printf("SWEET WLSMMU: page %#x, banks at %#x, free SMR %d, free bank %d\n", pg, cbbase, smr, cb);
++	if (smr < 0 || cb < 0) {
++		return 0;
++	}
++	sm_w32(g + cbbase + (uint32_t)cb * pg, 0);             /* CB SCTLR: M = 0, translation off */
++	sm_w32(g1 + 4 * (uint32_t)cb, 1u << 16);               /* CBAR: type 1, S1 translate + S2 bypass */
++	sm_w32(g + 0xc00 + 4 * (uint32_t)smr, (uint32_t)cb);   /* S2CR: type 0 (translate) to that bank */
++	__asm__ volatile("dsb sy" : : : "memory");
++	sm_w32(g + 0x800 + 4 * (uint32_t)smr, 0x80000000u | (1u << 16) | 0xc0u);  /* SMR: valid, mask 1, id 0xc0 */
++	__asm__ volatile("dsb sy" : : : "memory");
++	uint32_t rcbar = sm_r32(g1 + 4 * (uint32_t)cb), rs2cr = sm_r32(g + 0xc00 + 4 * (uint32_t)smr);
++	uint32_t rsmr = sm_r32(g + 0x800 + 4 * (uint32_t)smr), rsctlr = sm_r32(g + cbbase + (uint32_t)cb * pg);
++	int ok = (rsmr & 0x8000ffffu) == 0x800000c0u && (rs2cr & 0x300ffu) == (uint32_t)cb && (rcbar & 0x30000u) == 0x10000u &&
++	    !(rsctlr & 1u);
++	printf("SWEET WLSMMU: bypass bank: SMR%d %#x S2CR %#x CBAR %#x SCTLR %#x -> %s\n", smr, rsmr, rs2cr, rcbar, rsctlr,
++	    ok ? "physical DMA should work" : "refused");
++	return ok;
++}
+ /* 1: DMA with physical addresses can work (stream 0xc0 bypasses, or unmatched streams bypass) */
+ static int
+ wlan_smmu_probe(void)
+@@ -2503,6 +2556,9 @@ wlan_smmu_probe(void)
+ 		ok = !(cr0 & (1u << 10));               /* no match: sCR0.USFCFG 0 lets unmatched streams bypass */
+ 	}
+ 	printf("SWEET WLSMMU: physical DMA %s\n", ok ? "should work" : "would fault (needs an SMMU context bank)");
++	if (!ok) {
++		ok = wlan_smmu_bypass(idr0, idr1);
++	}
+ 	return ok;
+ }
+ 
