@@ -1,0 +1,22 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 286e7d6..8376e8d 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3219,7 +3219,16 @@ void sweet_backlight_power(int on);
+ void
+ sweet_backlight_power(int on)
+ {
+-	(void)sm_bl_apply(on ? (unsigned)sm_bl_level : 0);
++	/* opt-in (sweetblsleep=1): a boot with 0132 panicked after display changes, the SPMI write from this
++	 * thread is the suspect (the brightness slider froze the phone before 0120) */
++	static int checked, enabled;
++	if (!checked) {
++		checked = 1;
++		(void)PE_parse_boot_argn("sweetblsleep", &enabled, sizeof(enabled));
++	}
++	if (enabled) {
++		(void)sm_bl_apply(on ? (unsigned)sm_bl_level : 0);
++	}
+ }
+ 
+ static int

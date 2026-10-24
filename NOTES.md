@@ -1,5 +1,14 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-25 (later 4): WLANMDSP LOADED (0133), WLFW up, no FW_READY; panic; 0135
+- 0133+0134 (run 40100234027): RESUME_TX fixed it: wlanmdsp.mbn done, 3844700 bytes. WLFW: ind_register ok, msa_info
+  (2 regions 0x93900000/0x10000 secure, 0x93910000/0x1f0000), msa_ready ok, cap ok, chip id 0x320 family 0x4001,
+  fw 0x322183b3, then "no FW_READY in 60 s". The modem did not fetch any BDWLAN itself -> next run sweetwlbdf=1
+  (EXTRA_ARGS=sweetwlbdf=1 tools/wl-cycle.sh).
+- That boot panicked later (panic text not captured; DumpPanic ran on earlier boots too). Suspect 0132's SPMI write
+  from the display thread: 0135 makes it opt-in (sweetblsleep=1).
+- Keys: "junk read" seen (51 in one boot, pon=0x2b) - 0126 filter works.
+
 ## Handoff 2026-10-25 (later 3): 0130 raw requests -> 0133 RESUME_TX to the modem
 - 0130 (run 40097426763): raw requests are plain (probe: blksize 7680 timeoutms 1000 tsize 0 wsize 10; main: rsize
   3844700, no seek). The re-probe after block 70 gets our OACK (qrtr_send 0) but no answer.
