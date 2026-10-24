@@ -34,10 +34,10 @@ index c810db5..893acb4 100644
  /*
 diff --git a/iokit/Kernel/arm/RedwoodGPU.cpp b/iokit/Kernel/arm/RedwoodGPU.cpp
 new file mode 100644
-index 0000000..c66cd98
+index 0000000..5b58aaa
 --- /dev/null
 +++ b/iokit/Kernel/arm/RedwoodGPU.cpp
-@@ -0,0 +1,1312 @@
+@@ -0,0 +1,1313 @@
 +/*
 + * ios-miatoll: ported from HackiOS (https://github.com/qdizax-w/hackios-xnu-kernel, branch miatoll,
 + * xnu/files/iokit/Kernel/RedwoodGPU.cpp), APSL 2.0 like XNU; the comments below are theirs.
@@ -256,6 +256,7 @@ index 0000000..c66cd98
 +static IOLock * gGPULock;                       /* around everything that is the GPU's (redwood_gpu_...) */
 +static bool gGPUReported;
 +static bool gGPUCached;                         /* boot-arg gpu_cached=1 */
++static uint32_t gGPUKeep = 1;                   /* boot-arg gpu_keep=0 (a test): none kept; gpu_keep=2: kept ones cleared when given again */
 +static bool gGPUSaidSetIova;                    /* MSM_INFO_SET_IOVA has been refused out loud once */
 +
 +/* What the last seconds' submissions were and cost here, for the log. */
@@ -489,7 +490,7 @@ index 0000000..c66cd98
 +#define GPU_KEPT_BYTES          (160ull << 20)
 +#define GPU_KEPT_SECONDS        60              /* a buffer not asked for again in so long is let go */
 +#define GPU_KEEP_FROM           (256u << 10)    /* bytes: smaller ones are not worth it */
-+static uint32_t gGPUKeep = 1;            /* boot-arg gpu_keep */      /* boot-arg gpu_keep=0 (a test): none kept; gpu_keep=2: kept ones cleared when given again */
++/* (gGPUKeep: boot-arg gpu_keep, declared above) */      /* boot-arg gpu_keep=0 (a test): none kept; gpu_keep=2: kept ones cleared when given again */
 +
 +class RedwoodGPUUserClient : public IOUserClient
 +{
