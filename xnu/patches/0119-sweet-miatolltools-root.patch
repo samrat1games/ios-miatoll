@@ -1,0 +1,28 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -1578,6 +1578,24 @@
+ 	 * deal with set[ug]id.
+ 	 */
+ 	error = exec_handle_sugid(imgp);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * iOS kernels are built without CONFIG_SETUID, so the setuid bit of MiatollTools (our IPA installer, which
++	 * writes /Applications) never applied. That one executable, by its exact path, runs as root.
++	 */
++	if (!error) {
++		char sweet_path[64];
++		int sweet_len = sizeof(sweet_path);
++		if (vn_getpath(imgp->ip_vp, sweet_path, &sweet_len) == 0 &&
++		    strcmp(sweet_path, "/Applications/MiatollTools.app/MiatollTools") == 0) {
++			proc_update_label(p, false, ^kauth_cred_t (kauth_cred_t my_cred) {
++				return kauth_cred_setresuid(my_cred, 0, 0, 0, KAUTH_UID_NONE);
++			});
++			OSBitOrAtomic(P_SUGID, &p->p_flag);
++			printf("SWEET: MiatollTools runs as root\n");
++		}
++	}
++#endif
+ 	if (error) {
+ 		KERNEL_DEBUG_CONSTANT(BSDDBG_CODE(DBG_BSD_PROC, BSD_PROC_EXITREASON_CREATE) | DBG_FUNC_NONE,
+ 		    proc_getpid(p), OS_REASON_EXEC, EXEC_EXIT_REASON_SUGID_FAILURE, 0, 0);
