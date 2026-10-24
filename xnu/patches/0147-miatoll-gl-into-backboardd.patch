@@ -1,8 +1,16 @@
 diff --git a/bsd/dev/miatoll_adreno.c b/bsd/dev/miatoll_adreno.c
-index cad9692..1019426 100644
+index cad9692..bad44a2 100644
 --- a/bsd/dev/miatoll_adreno.c
 +++ b/bsd/dev/miatoll_adreno.c
-@@ -5161,6 +5161,7 @@ miatoll_adreno_thread(void *arg, wait_result_t result)
+@@ -4028,6 +4028,7 @@ redwood_adreno_quiesce(void)
+ #define GPU_RECOVERIES          64                      /* at most in one run: a program that hangs every submission fills no log with this */
+ 
+ static bool gpu_kept;
++static volatile int adreno_starting;    /* 0147: gpu=1's thread has not finished yet */
+ static uint32_t adreno_done, adreno_failed;   /* ios-miatoll: for the later summary line */
+ extern uint32_t redwood_gpu_service;       /* RedwoodGPU.cpp: 1 once registered */
+ static uint32_t gpu_fence;              /* the number of the last submission */
+@@ -5161,6 +5162,7 @@ miatoll_adreno_thread(void *arg, wait_result_t result)
  	}
  	printf("adreno: firmware (" MIATOLL_GPU_FW_DIR "a618_gmu.bin) %s after %u s\n", s < wait_s ? "found" : "NOT found", s);
  	redwood_adreno_init();
@@ -10,7 +18,7 @@ index cad9692..1019426 100644
  	/* ios-miatoll: the USB log streams only after userland is up and its replay drops lines: say it again later */
  	sleep_ms(90 * 1000);
  	printf("adreno: summary: last step done %u, failed %u, the GPU %s, service RedwoodGPU %s\n", adreno_done,
-@@ -5169,6 +5170,47 @@ miatoll_adreno_thread(void *arg, wait_result_t result)
+@@ -5169,6 +5171,46 @@ miatoll_adreno_thread(void *arg, wait_result_t result)
  	thread_block(THREAD_CONTINUE_NULL);
  }
  
@@ -22,7 +30,6 @@ index cad9692..1019426 100644
 + * (gpu=1), backboardd waits for it, up to 30 s. dyld honours the variable because of 0146.
 + */
 +#define MIATOLL_GL_LIBRARY      MIATOLL_GPU_FW_DIR "libredwood-gl.dylib"
-+static volatile int adreno_starting;
 +
 +const char *miatoll_gl_env(const char *path);
 +const char *
