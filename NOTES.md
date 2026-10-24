@@ -1,5 +1,15 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-24: Wi-Fi firmware TFTP stall - patch 0121, NOT booted yet
+- Observed (logs/bridge.log): modem up, PDR listener ok (wlan_pd UNINIT), modem asks TFTP for wlanmdsp.mbn twice with
+  rsize 0 (tsize probe, then client error 9 = normal abort), then RRQ with rsize 3844700 from port 0x48/0x4c - after
+  that NO "done", no error, no WLFW. The modem posted 7716-byte intents (= 7680 blksize + 4 + 32), so it was waiting for DATA.
+- Guess (not verified): gl_send() asked RX_INTENT_REQ only once per size; a refused/lost request stalled TFTP forever.
+- 0121: re-ask after 500 refused sends, log refused RX_INTENT_REQ_ACK, TFTP logs ACK 0 / every 64th ACK and
+  "stalled at block ..." with queue/intent state; name buffer 64. `git apply --check` ok on top of 0001..0120, not compiled.
+- Log keys: "SWEET TFTP: ... ACK", "stalled at block", "no intent for", "modem refused an intent", then SWEET WLFW / FW_READY.
+- GitHub search again: no IOKit/XNU WCN3990 driver exists. Reference worth reading: youqiu7/mi8-mainline-debian (WCN3990 root causes).
+
 ## Handoff 2026-10-23 (evening): battery 0106, modem diag 0107, copy engine 0108, ipa-serve - NOT booted with logs yet
 - Recovery (Linux QG) ground truth: 85%, Charging, 4057 mV, -1174 mA, charge_full 5077 mAh; our voltage curve gave ~55%.
   0106: seed from QG SDAM (PM6150 0xb646 valid / 0xb647 SOC / 0xb654 time, < 12 h by RTC 0x6048), coulomb count,

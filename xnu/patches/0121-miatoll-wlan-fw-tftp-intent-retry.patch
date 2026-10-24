@@ -1,0 +1,97 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index f44543c..1ec2112 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -809,6 +809,7 @@ static uint32_t gl_rcid, gl_open_remote, gl_open_local, gl_next_iid = 1;
+ static struct { uint32_t id, size; int used; } gl_rintent[64];   /* the modem advertises ~30 (128..8320 bytes) */
+ static int gl_nrint;
+ static unsigned gl_rxdone_log;
++static uint32_t gl_req_pending, gl_req_wait;    /* RX_INTENT_REQ in flight: size, sends refused since */
+ static uint8_t gl_msgbuf[8192];
+ static uint32_t gl_msglen;
+ 
+@@ -862,7 +863,6 @@ gl_open_ours(void)
+ static int
+ gl_send(const void *data, uint32_t len)
+ {
+-	static uint32_t gl_req_pending;
+ 	int i = -1;
+ 	for (int k = 0; k < gl_nrint; ++k) {
+ 		if (!gl_rintent[k].used && gl_rintent[k].size >= len && (i < 0 || gl_rintent[k].size < gl_rintent[i].size)) {
+@@ -870,14 +870,20 @@ gl_send(const void *data, uint32_t len)
+ 		}
+ 	}
+ 	if (i < 0) {
+-		/* ask once per size; the modem answers with an INTENT and RX_INTENT_REQ_ACK */
+-		if (gl_req_pending != len) {
++		/* the modem answers with an INTENT and RX_INTENT_REQ_ACK; ask again if that never comes or was refused */
++		if (gl_req_pending != len || ++gl_req_wait >= 500) {
++			if (gl_req_pending == len) {
++				printf("SWEET GLINK: no intent for %u bytes after %u tries, asking again (%d known)\n", len,
++				    gl_req_wait, gl_nrint);
++			}
+ 			gl_req_pending = len;
++			gl_req_wait = 0;
+ 			gl_msg(GC_RX_INTENT_REQ, (uint16_t)GL_LCID, len);
+ 		}
+ 		return EAGAIN;
+ 	}
+ 	gl_req_pending = 0;
++	gl_req_wait = 0;
+ 	uint8_t h[16];
+ 	uint16_t cmd = GC_TX_DATA, l = (uint16_t)GL_LCID;
+ 	uint32_t iid = gl_rintent[i].id, chunk = len, left = 0;
+@@ -1001,6 +1007,12 @@ gl_poll(void)
+ 			gl_msg(GC_RX_INTENT_REQ_ACK, (uint16_t)GL_LCID, 1);
+ 			break;
+ 		case GC_RX_INTENT_REQ_ACK:
++			if (!p2) {
++				printf("SWEET GLINK: modem refused an intent of %u bytes\n", gl_req_pending);
++				gl_req_wait = 500;              /* the next send asks again */
++			}
++			gl_rx_advance(8);
++			break;
+ 		case GC_READ_NOTIF:
+ 		case GC_CLOSE_ACK:
+ 			gl_rx_advance(8);
+@@ -1745,7 +1757,8 @@ static struct {
+ 	uint32_t blksize, wsize, rsize;
+ 	uint32_t blk, blk_end;          /* reader: next window is blocks blk+1 .. blk_end */
+ 	uint64_t sent;
+-	char name[48];
++	char name[64];
++	uint32_t idle;                  /* tftp_work() calls without progress */
+ } tftp_cl[TFTP_NCLIENT];
+ static uint8_t tftp_buf[TFTP_MAXBLK + 4];
+ 
+@@ -1978,6 +1991,10 @@ tftp_client_rx(uint32_t slot, uint32_t node, uint32_t port, const uint8_t *q, ui
+ 		tftp_close((int)slot);
+ 		return;
+ 	}
++	if (blk == 0 || (blk % 64) == 0) {
++		printf("SWEET TFTP: %s ACK %u (%llu bytes so far)\n", tftp_cl[slot].name, blk, tftp_cl[slot].sent);
++	}
++	tftp_cl[slot].idle = 0;
+ 	tftp_cl[slot].blk = blk;
+ 	tftp_cl[slot].blk_end = blk + tftp_cl[slot].wsize;
+ 	tftp_cl[slot].sending = 1;
+@@ -2001,6 +2018,11 @@ static void
+ tftp_work(void)
+ {
+ 	for (int i = 0; i < TFTP_NCLIENT; ++i) {
++		if (tftp_cl[i].used && ++tftp_cl[i].idle == 3000) {
++			printf("SWEET TFTP: %s stalled at block %u (%s, %llu bytes sent, qrtr queue %u, intents %d, waiting %u)\n",
++			    tftp_cl[i].name, tftp_cl[i].blk, tftp_cl[i].sending ? "sending" : "waiting for ACK", tftp_cl[i].sent,
++			    qrtr_txq_n, gl_nrint, gl_req_pending);
++		}
+ 		while (tftp_cl[i].used && tftp_cl[i].sending && qrtr_txq_room()) {
+ 			uint32_t b = tftp_cl[i].blk;
+ 			uint64_t bs = tftp_cl[i].blksize, off = tftp_cl[i].seek + (uint64_t)b * bs;
+@@ -2023,6 +2045,7 @@ tftp_work(void)
+ 			}
+ 			qrtr_send(QRTR_TYPE_DATA, tftp_cl[i].node, tftp_cl[i].port, TFTP_XPORT + (uint32_t)i, tftp_buf, 4 + n);
+ 			tftp_cl[i].sent += n;
++			tftp_cl[i].idle = 0;
+ 			tftp_cl[i].blk = ++b;
+ 			if (last || n < bs || b >= tftp_cl[i].blk_end) {
+ 				tftp_cl[i].sending = 0;
