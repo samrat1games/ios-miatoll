@@ -14,3 +14,4 @@ logs-*.txt
 logs/
 board/identity.json
 extras/
+fw-gpu/
