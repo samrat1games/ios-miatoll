@@ -1,0 +1,24 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index b5e7f0b..ddaf075 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1227,6 +1227,19 @@ qrtr_rx(const uint8_t *pkt, uint32_t len)
+ 	}
+ 	uint32_t h[8];
+ 	memcpy(h, pkt, 32);
++	if (h[1] == QRTR_TYPE_DATA && h[4]) {
++		/*
++		 * Linux qrtr_send_resume_tx(): the sender asks for confirmation and stops after its quota until it comes.
++		 * Never answered before: after ~10 ACKs to our TFTP port the modem could not send any more and dropped
++		 * the WLANMDSP read at block 70.
++		 */
++		uint32_t r[5] = {QRTR_TYPE_RESUME_TX, QRTR_LOCAL_NODE, h[7], 0, 0};
++		static unsigned resume_log;
++		if (resume_log++ < 10) {
++			printf("SWEET QRTR: confirm_rx from %u:%#x to %#x, sending RESUME_TX\n", h[2], h[3], h[7]);
++		}
++		qrtr_send(QRTR_TYPE_RESUME_TX, h[2], h[3], h[7], r, 20);
++	}
+ 	if (h[1] == QRTR_TYPE_RESUME_TX && len >= 32 + 12) {
+ 		/* Linux qrtr_tx_resume(): the remote port (client.node, client.port) took what was sent */
+ 		uint32_t c[3];

@@ -1,5 +1,13 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-25 (later 3): 0130 raw requests -> 0133 RESUME_TX to the modem
+- 0130 (run 40097426763): raw requests are plain (probe: blksize 7680 timeoutms 1000 tsize 0 wsize 10; main: rsize
+  3844700, no seek). The re-probe after block 70 gets our OACK (qrtr_send 0) but no answer.
+- Guess: QRTR flow control also runs modem -> us: its packets to our port 0x4010 (window ACKs + probe errors) carry
+  confirm_rx and it waits for our RESUME_TX after ~10; we never sent one -> its TFTP client can no longer reach us.
+- 0133: answer every DATA with confirm_rx by RESUME_TX {7, local node, our port} (Linux qrtr_send_resume_tx).
+  Log "confirm_rx from ... sending RESUME_TX" (first 10).
+
 ## Handoff 2026-10-25 (later 2): 0132 backlight off with the display
 - miatoll is LCD + WLED: 0085's "black = off" (AMOLED sweet) left the backlight glowing when iOS sleeps the display.
   0132: kSweetFBRequestPowerChange calls sweet_backlight_power() -> sm_bl_apply(0 / sm_bl_level). Uses 0120's owner
