@@ -12,7 +12,16 @@ bash tools/.wl-boot.sh wl >/dev/null || { rm -f tools/.wl-boot.sh; echo "build o
 rm -f tools/.wl-boot.sh
 start=$(($(wc -l < logs/bridge.log) + 1))
 fastboot boot shim/out/shim-boot-wl.img
-echo "booted, waiting for the WLAN firmware (up to 15 min)..."
+echo "booted, waiting for the phone's log..."
+for i in $(seq 1 30); do
+	[ "$(wc -l < logs/bridge.log)" -ge "$start" ] && break
+	sleep 10
+done
+if [ "$(wc -l < logs/bridge.log)" -lt "$start" ]; then
+	echo "NO LOG after 5 min: is tools/sweet-bridge-macos.sh running and does it see the phone?"
+	exit 1
+fi
+echo "log is coming, waiting for the WLAN firmware (up to 15 min)..."
 for i in $(seq 1 90); do
 	tail -n +$start logs/bridge.log | grep -a -q -E 'FATAL, crash|FW_READY|no FW_READY|HTC READY' && break
 	sleep 10
