@@ -1,0 +1,17 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 8376e8d..dd62dad 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1398,7 +1398,11 @@ qmi_tlv(uint8_t *b, uint32_t off, uint8_t tag, const void *val, uint16_t len)
+ static const uint8_t *
+ qmi_call(uint16_t msg_id, const uint8_t *tlvs, uint16_t tlen, uint32_t *rlen, unsigned timeout_ms)
+ {
+-	static uint8_t m[2048];
++	static uint8_t m[8192 - 32];            /* a BDF segment is 6144 bytes + TLVs (2048 overflowed: memcpy_chk panic) */
++	if ((uint32_t)tlen + 7 > sizeof(m)) {
++		printf("SWEET QMI: message %#x too big (%u bytes)\n", msg_id, tlen);
++		return NULL;
++	}
+ 	uint16_t txn = ++qmi_txn_id;
+ 	m[0] = 0;                               /* request */
+ 	memcpy(m + 1, &txn, 2);

@@ -1,5 +1,10 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-25 (later 5): sweetwlbdf=1 panicked -> 0136
+- Photo of the panic: "__memcpy_chk object size check failed: dst ..., src ..., (2041 < 6178) @subrs.c:716":
+  qmi_call() built messages in m[2048]; a BDF segment message is 6178 bytes. 0136: m[8160] + size check.
+- Control Center shows no blur: Reduce Transparency is set by tools/miatoll-live-tweaks.py on purpose (speed).
+
 ## Handoff 2026-10-25 (later 4): WLANMDSP LOADED (0133), WLFW up, no FW_READY; panic; 0135
 - 0133+0134 (run 40100234027): RESUME_TX fixed it: wlanmdsp.mbn done, 3844700 bytes. WLFW: ind_register ok, msa_info
   (2 regions 0x93900000/0x10000 secure, 0x93910000/0x1f0000), msa_ready ok, cap ok, chip id 0x320 family 0x4001,
