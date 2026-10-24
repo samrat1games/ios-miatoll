@@ -1,0 +1,50 @@
+diff --git a/bsd/dev/miatoll_adreno.c b/bsd/dev/miatoll_adreno.c
+index 88d14ab..c810db5 100644
+--- a/bsd/dev/miatoll_adreno.c
++++ b/bsd/dev/miatoll_adreno.c
+@@ -5,8 +5,9 @@
+  * xnu/files/bsd/dev/redwood_adreno.c), APSL 2.0 like XNU; the comments below are theirs.
+  * What changed for this kernel (see NOTES.md "Adreno 618 port"):
+  *   - no xnuloader: the log is printf only (USB log), loader_return() is a no-op;
+- *   - the firmware is read from the root volume, /private/var/miatoll/gpu/ (the phone's
+- *     /vendor/firmware/a618_gmu.bin, a630_sqe.fw, a615_zap.mdt, a615_zap.b02), not a RAM disk;
++ *   - the firmware is read from the root volume, /private/var/miatoll/ (the phone's
++ *     /vendor/firmware/a618_gmu.bin, a630_sqe.fw, a615_zap.mdt, a615_zap.b02; 0144: flat, as
++ *     tools/sweet-put.py writes them), not a RAM disk;
+  *   - started by miatoll_adreno_start() (bsd_init, after the root mount) in a thread of its own;
+  *   - this kernel only runs on miatoll: the SoC is always soc_miatoll;
+  *   - no RedwoodGPU IOKit service yet (Mesa follows later): RedwoodGPUStart/Stop are stubs,
+@@ -1845,7 +1846,7 @@ step_trustzone(void)
+  */
+ static bool image_asked_quietly;        /* image_file() says nothing: is the file there at all */
+ 
+-#define MIATOLL_GPU_FW_DIR      "/private/var/miatoll/gpu/"
++#define MIATOLL_GPU_FW_DIR      "/private/var/miatoll/"    /* where tools/sweet-put.py puts files */
+ 
+ /* A file of MIATOLL_GPU_FW_DIR in kernel memory, read once and kept (directory "fw" stands for it). */
+ static const uint8_t *
+@@ -5144,7 +5145,7 @@ redwood_adreno_init(void)
+ /*
+  * ios-miatoll: boot-arg adreno=N (the steps, see the top) or gpu=1 (the GPU kept on). Called from
+  * bsd_init() after the root mount; the steps run in a thread of their own once the firmware
+- * directory is there (adreno_wait=S, default 60 s), so the system start does not wait.
++ * is there (adreno_wait=S, default 60 s), so the system start does not wait.
+  */
+ static void
+ miatoll_adreno_thread(void *arg, wait_result_t result)
+@@ -5156,13 +5157,13 @@ miatoll_adreno_thread(void *arg, wait_result_t result)
+ 	(void)result;
+ 	PE_parse_boot_argn("adreno_wait", &wait_s, sizeof(wait_s));
+ 	for (s = 0; s < wait_s; s++) {
+-		if (vnode_lookup(MIATOLL_GPU_FW_DIR, 0, &vp, vfs_context_kernel()) == 0) {
++		if (vnode_lookup(MIATOLL_GPU_FW_DIR "a618_gmu.bin", 0, &vp, vfs_context_kernel()) == 0) {
+ 			vnode_put(vp);
+ 			break;
+ 		}
+ 		sleep_ms(1000);
+ 	}
+-	printf("adreno: firmware directory %s after %u s\n", s < wait_s ? "found" : "NOT found", s);
++	printf("adreno: firmware (" MIATOLL_GPU_FW_DIR "a618_gmu.bin) %s after %u s\n", s < wait_s ? "found" : "NOT found", s);
+ 	redwood_adreno_init();
+ 	(void)thread_terminate(current_thread());
+ 	thread_block(THREAD_CONTINUE_NULL);

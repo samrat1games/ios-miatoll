@@ -10,16 +10,16 @@ What differs from their boot: no xnuloader (no loader log / loader_return / ufs-
 from the root volume), no MiniIOMobileFramebuffer/MiniIOSurface (ours: SweetFramebuffer + stock iOS 16.7 userland).
 Steps:
 1. **0142** `bsd/dev/miatoll_adreno.c` = their redwood_adreno.c with shims (header lists them); bsd_init calls
-   `miatoll_adreno_start()` after the root mount -> thread waits for `/private/var/miatoll/gpu/` (adreno_wait=S, 60) ->
+   `miatoll_adreno_start()` after the root mount -> thread waits for `/private/var/miatoll/` (adreno_wait=S, 60) ->
    `redwood_adreno_init()`. Off unless `adreno=N` or `gpu=1`. Test order: `adreno=10` (reads, CX GDSC + clocks, GMU memory;
-   no firmware, no TZ), then firmware into /private/var/miatoll/gpu/ (a618_gmu.bin a630_sqe.fw a615_zap.mdt a615_zap.b02 from
+   no firmware, no TZ), then firmware into /private/var/miatoll/ (a618_gmu.bin a630_sqe.fw a615_zap.mdt a615_zap.b02 from
    the phone's Android /vendor/firmware; root edit = tweak flow, needs the user's OK) and `adreno=21`, then `gpu=1`.
    Caution: steps 11/12/19 are TZ SMCs; the modem thread does SMCs at ~70 s - run the GPU before it or with sweetmodem=0.
    Step 22's picture is only sampled in the log (SweetFramebuffer owns the panel).
    **0143** build fix; CI run 40112769440 GREEN (0142+0143). Not booted yet.
    **adreno=10 BOOTED 2026-10-24** (kernel run 40112769440, `EXTRA_ARGS="adreno=10 adreno_pause=300 adreno_watch=5"` via ci-boot.sh lines 13-17):
    steps 1-10 all done, no panic, system went on. cmd-db at 0x80820000 read; cx_gmu measured 200.001 MHz; GPU SMMU idr0 0x48016605;
-   GMU DTCM write/readback ok. Next: GPU firmware into /private/var/miatoll/gpu/ (user OK) -> adreno=21.
+   GMU DTCM write/readback ok. Next: GPU firmware into /private/var/miatoll/ (user OK) -> adreno=21.
 2. DDR BCM vote from redwood_cpufreq.c (cmd_db 0x80820000) - only the vote, our CPU freq is OSM not EPSS.
 3. RedwoodGPU.cpp as an IOKit service: needs their MiniIOSurface -> map to the real IOSurface of iOS 16.7 (biggest gap).
 4. Userland: Mesa freedreno build (mk-mesa.sh) + their GL/CoreAnimation injection, into our root via the tweak flow.
