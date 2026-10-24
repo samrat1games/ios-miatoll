@@ -25,6 +25,14 @@ Steps:
    loaded, HFI init/version/speed+bus tables accepted, 3D core clock measured 267 MHz, zap shader via TZ ok, CP started,
    3D core left secure mode and wrote 0x600dc0de to our page on command; GPU SMMU no faults; stopped after watch, no panic.
    Next: gpu=1 (kept on; needs a RedwoodGPU service to be useful), then items 2-4.
+   **0145** `iokit/Kernel/arm/RedwoodGPU.cpp` = HackiOS RedwoodGPU.cpp (msm-DRM user client for Mesa) on SweetSurface
+   (pixels from byte 0, seed at state+0xc, new `drawn` field; SweetFramebuffer::present waits for it via
+   RedwoodGPUSurfaceDrawn) and sweet_fb_show (kRedwoodShow); RedwoodGPUStart/Stop real; summary line 90 s after the run
+   ("adreno: summary: ... service RedwoodGPU REGISTERED") because the USB log streams only once userland is up and the
+   "log" replay (`printf log | nc -u -w1 192.168.7.2 5141`) drops chunks. CI green 40122874698. First gpu=1 boot
+   (40120609318): steps 1-18 seen in the lossy replay, end not seen -> retest with the summary line.
+   **Mesa (step 2)**: `tools/mk-mesa.sh` (macOS: Xcode iPhoneOS SDK, minos 16.0, brew bison) + `tools/mesa/*` (HackiOS)
+   -> `mesa-build/out/libOSMesa.8.dylib` (gitignored; 14.8 MB, 1296 gl*, softpipe+freedreno, opens "RedwoodGPU"). BUILT.
 2. DDR BCM vote from redwood_cpufreq.c (cmd_db 0x80820000) - only the vote, our CPU freq is OSM not EPSS.
 3. RedwoodGPU.cpp as an IOKit service: needs their MiniIOSurface -> map to the real IOSurface of iOS 16.7 (biggest gap).
 4. Userland: Mesa freedreno build (mk-mesa.sh) + their GL/CoreAnimation injection, into our root via the tweak flow.
