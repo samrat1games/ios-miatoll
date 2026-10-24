@@ -58,6 +58,8 @@ def main():
     s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     s.setsockopt(socket.IPPROTO_IP, IP_BOUND_IF, socket.if_nametoindex(ifname))
     s.bind(('0.0.0.0', 67))
+    mac = subprocess.run(['ifconfig', ifname], capture_output=True, text=True).stdout.split('ether ')[1].split()[0]
+    own = bytes.fromhex(mac.replace(':', ''))
     print(f'DHCP on {ifname}: {CLIENT}/24, router {SERVER}, dns {" ".join(DNS)}', flush=True)
     while True:
         pkt, _ = s.recvfrom(2048)
@@ -65,6 +67,8 @@ def main():
             continue
         t = option(pkt, 53)
         if not t or t[0] not in (1, 3):     # DISCOVER, REQUEST
+            continue
+        if pkt[28:34] == own:               # the Mac's own interface asks too: never hand it the phone's address
             continue
         answer = 2 if t[0] == 1 else 5      # OFFER, ACK
         s.sendto(reply(pkt, answer), ('255.255.255.255', 68))
