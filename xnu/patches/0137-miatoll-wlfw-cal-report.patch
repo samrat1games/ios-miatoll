@@ -1,0 +1,36 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index dd62dad..de352e7 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1372,6 +1372,7 @@ qrtr_start(void)
+ #define WLFW_MSA_READY          0x2e
+ #define WLFW_CAP                0x24
+ #define WLFW_BDF_DOWNLOAD       0x25
++#define WLFW_CAL_REPORT         0x26
+ #define WLFW_WLAN_MODE          0x22
+ #define WLFW_WLAN_CFG           0x23
+ #define WLFW_FW_READY_IND       0x21
+@@ -2766,10 +2767,22 @@ wl_ce_start(void)
+ static void
+ wlfw_after_cap(uint32_t board_id)
+ {
+-	uint32_t bdf = 0;
++	uint32_t bdf = 1;                       /* default on since 0137: the modem never fetched BDWLAN itself */
+ 	(void)PE_parse_boot_argn("sweetwlbdf", &bdf, sizeof(bdf));
+ 	if (bdf) {
+ 		wlfw_bdf_download(board_id);
++		/*
++		 * ath10k_qmi_send_cal_report_req(): after the board file the host reports which calibration files it
++		 * has (none here: meta_data count 0). The firmware only says FW_READY after this.
++		 */
++		uint8_t t[8], none = 0;
++		uint32_t rl = 0, o = qmi_tlv(t, 0, 0x01, &none, 1);
++		const uint8_t *r = qmi_call(WLFW_CAL_REPORT, t, (uint16_t)o, &rl, 5000);
++		if (!r) {
++			printf("SWEET WLFW: cal_report: no answer\n");
++		} else {
++			(void)qmi_result("cal_report", r, rl);
++		}
+ 	}
+ 	/* the firmware says FW_READY when it is up; meanwhile the modem may still read files over TFTP */
+ 	for (unsigned ms = 0; !wlfw_fw_ready && ms < 60000; ms += 10) {

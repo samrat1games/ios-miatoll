@@ -4,11 +4,19 @@
 #   tools/wl-cycle.sh        (phone in fastboot, tools/sweet-bridge-macos.sh running)
 set -e
 cd "$(dirname "$0")/.."
-rid=$(gh run list --workflow xnu.yml -L 1 --json databaseId -q '.[0].databaseId')
+# the run of the current commit (the newest run may still be an older one right after a push)
+head=$(git rev-parse HEAD)
+for i in $(seq 1 60); do
+	rid=$(gh run list --workflow xnu.yml --commit "$head" -L 1 --json databaseId -q '.[0].databaseId' 2>/dev/null)
+	[ -n "$rid" ] && break
+	sleep 10
+done
+[ -n "$rid" ] || { echo "no xnu run for $head"; exit 1; }
 echo "xnu run $rid"
 sed -e 's/sweetmodem=0/sweetmodem=1/' -e "s/^rid=.*/rid=$rid/" tools/ci-boot.sh > tools/.wl-boot.sh
 rm -rf /tmp/kdl
-bash tools/.wl-boot.sh wl >/dev/null || { rm -f tools/.wl-boot.sh; echo "build of the boot image failed"; exit 1; }
+rm -f shim/out/shim-boot-wl.img
+bash tools/.wl-boot.sh wl >/dev/null; [ -s shim/out/shim-boot-wl.img ] && [ -s /tmp/kdl/kernel.development.sweet ] || { rm -f tools/.wl-boot.sh; echo "build of the boot image failed"; exit 1; }
 rm -f tools/.wl-boot.sh
 if ! fastboot devices | grep -q fastboot; then
 	echo "phone not in fastboot: asking iOS to restart into the bootloader (UDP 5141)"

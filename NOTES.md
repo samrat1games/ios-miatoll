@@ -1,5 +1,12 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-25 (later 6): BDF sent (0136), still no FW_READY; 0137 cal report
+- 0136 + sweetwlbdf=1 (run 40103308604): BDWLAN.BIN 26328 bytes, 5 segments, all results 0, no panic. No FW_READY in 60 s.
+- 0137: WLFW_CAL_REPORT (0x26, TLV 0x01 meta_data count 0) after the BDF, like ath10k_qmi_send_cal_report_req();
+  BDF download default on (sweetwlbdf=0 turns it off).
+- tools/wl-cycle.sh: uses the xnu run of HEAD (was: newest run, booted a stale kernel once) and stops if the kernel
+  download failed.
+
 ## Handoff 2026-10-25 (later 5): sweetwlbdf=1 panicked -> 0136
 - Photo of the panic: "__memcpy_chk object size check failed: dst ..., src ..., (2041 < 6178) @subrs.c:716":
   qmi_call() built messages in m[2048]; a BDF segment message is 6178 bytes. 0136: m[8160] + size check.
