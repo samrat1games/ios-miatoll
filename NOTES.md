@@ -16,6 +16,7 @@ Steps:
    the phone's Android /vendor/firmware; root edit = tweak flow, needs the user's OK) and `adreno=21`, then `gpu=1`.
    Caution: steps 11/12/19 are TZ SMCs; the modem thread does SMCs at ~70 s - run the GPU before it or with sweetmodem=0.
    Step 22's picture is only sampled in the log (SweetFramebuffer owns the panel).
+   **0143** build fix; CI run 40112769440 GREEN (0142+0143). Not booted yet.
 2. DDR BCM vote from redwood_cpufreq.c (cmd_db 0x80820000) - only the vote, our CPU freq is OSM not EPSS.
 3. RedwoodGPU.cpp as an IOKit service: needs their MiniIOSurface -> map to the real IOSurface of iOS 16.7 (biggest gap).
 4. Userland: Mesa freedreno build (mk-mesa.sh) + their GL/CoreAnimation injection, into our root via the tweak flow.
