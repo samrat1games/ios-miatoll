@@ -1,0 +1,45 @@
+diff --git a/iokit/Kernel/arm/RedwoodGPU.cpp b/iokit/Kernel/arm/RedwoodGPU.cpp
+index 329c9ba..056cf73 100644
+--- a/iokit/Kernel/arm/RedwoodGPU.cpp
++++ b/iokit/Kernel/arm/RedwoodGPU.cpp
+@@ -360,6 +360,32 @@ RedwoodGPU::start(IOService * provider)
+ 	return true;
+ }
+ 
++/*
++ * ios-miatoll 0148, from HackiOS MiniIOMobileFramebuffer.cpp (publishAccelerator): the graphics
++ * accelerator CoreAnimation waits for before it looks for a GPU at all. Without the Metal plug-in
++ * properties Metal passes it over, so the render server takes [EAGLContext initWithAPI:3], which
++ * libredwood-gl.dylib (0147) answers with Mesa on this GPU. Published only when the GPU is kept on.
++ */
++class IOAcceleratorES : public IOService
++{
++	OSDeclareDefaultStructors(IOAcceleratorES);
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
++
++static void
++publishAccelerator(IOService * provider)
++{
++	IOAcceleratorES * accelerator = OSTypeAlloc(IOAcceleratorES);
++
++	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
++		accelerator->setName("sgx");
++		accelerator->registerService();
++		IOLog("RedwoodGPU: IOAcceleratorES published\n");
++	}
++	OSSafeReleaseNULL(accelerator);
++}
++
+ void
+ RedwoodGPUStart(void)
+ {
+@@ -382,6 +408,7 @@ RedwoodGPUStart(void)
+ 		IOLog("RedwoodGPU: the service did not start\n");
+ 	} else {
+ 		redwood_gpu_service = 1;
++		publishAccelerator(provider);
+ 		IOLog("RedwoodGPU: service registered (user client RedwoodGPUUserClient)\n");
+ 	}
+ 	gpu->release();
