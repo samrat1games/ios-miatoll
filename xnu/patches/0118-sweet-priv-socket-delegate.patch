@@ -1,0 +1,14 @@
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -326,7 +326,10 @@
+ static int
+ sweet_sandbox_priv_grant(kauth_cred_t cred __unused, int priv)
+ {
+-	if (priv == PRIV_WORK_INTERVAL) {
++	/* PRIV_NET_PRIVILEGED_SOCKET_DELEGATE (10001): com.apple.WebKit.Networking opens the sockets on behalf of
++	 * Safari (SO_DELEGATED); denied, Safari sent no packet at all and every page stayed white. */
++	if (priv == PRIV_WORK_INTERVAL || priv == PRIV_NET_PRIVILEGED_SOCKET_DELEGATE) {
+ 		return 0;
+ 	}
+ 	char name[20];
