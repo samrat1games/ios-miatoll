@@ -1,5 +1,12 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-25 (later): 0130 raw TFTP requests, 0131 power off
+- 0130: raw WLANMDSP RRQ bytes + non-request packets to the TFTP port are printed (0129 lost the re-probe in the UDP log).
+- 0131: PE_halt_restart (was NULL: "Turn off" left the phone powered with a black screen): kPEHaltCPU -> PON 0x5b=0,
+  0x5a=4 (SHUTDOWN), 0x5b=0x80, PSCI SYSTEM_OFF, PS_HOLD low; kPERestartCPU -> plain PMIC restart. Untested.
+  Log: "SWEET POWER: ...". The UDP "bootloader" command does not work for the user (not investigated).
+- tools/wl-cycle.sh tries UDP "bootloader" first, else asks for fastboot by hand.
+
 ## Handoff 2026-10-25: 0128 booted (run 40095314681) - kernel reads WLANMDSP right; 0129
 - All 12 x 64 KiB FNV-1a of the re-read match the Mac file: data is not the problem.
 - Still: modem closes the read after 70 blocks (DEL_CLIENT), re-probes (rsize 0) and our OACK gets no answer

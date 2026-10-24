@@ -1,0 +1,66 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 8232f71..595d883 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3318,6 +3318,51 @@ sweet_reboot_bootloader(void)
+ 	}
+ }
+ 
++/*
++ * "Turn off" in iOS ends in PEHaltRestart(kPEHaltCPU). Nothing handled it: the CPUs stopped and the phone stayed
++ * powered (black screen, battery drain). Power off like Linux qpnp-pon: PM6150 PON PS_HOLD reset type SHUTDOWN
++ * (0x5a = 4, enable 0x5b bit 7), then PSCI SYSTEM_OFF; PS_HOLD low as the last resort.
++ */
++static void
++sweet_power_off(void)
++{
++	printf("SWEET POWER: off\n");             /* no PAS_SHUTDOWN: it can hang a CPU (0102), the PMIC resets the modem */
++	if (!sp_init()) {
++		uint16_t apid = sp_find_apid(0x008);
++		if (apid != SP_NO_APID) {
++			int e1 = sp_write(apid, 0x5b, 0, 1);
++			touch_wait(1);
++			int e2 = sp_write(apid, 0x5a, 4, 1);
++			int e3 = sp_write(apid, 0x5b, 0x80, 1);
++			printf("SWEET POWER: PON PS_HOLD -> shutdown (%d %d %d)\n", e1, e2, e3);
++		}
++	}
++	touch_wait(100);
++	sm_smc(0x84000008ULL, 0, 0, 0, 0, NULL, NULL, NULL);       /* PSCI SYSTEM_OFF */
++	printf("SWEET POWER: SYSTEM_OFF returned, dropping PS_HOLD\n");
++	vm_offset_t ps = ml_io_map(0x0c264000ULL, 0x4000);
++	if (ps) {
++		sm_w32(ps, 0);
++		__asm__ volatile("dsb sy" : : : "memory");
++	}
++	for (;;) {
++		__asm__ volatile("wfe");
++	}
++}
++
++static int
++sweet_halt_restart(unsigned int type)
++{
++	if (type == kPEHaltCPU) {
++		sweet_power_off();
++	} else if (type == kPERestartCPU) {
++		sm_reboot_plain = 1;
++		sm_reboot_nomodem = 1;          /* the PMIC restart resets the modem too */
++		sweet_reboot_bootloader();
++	}
++	return 0;
++}
++
+ /* the USB command port (bsd/dev/sweet_usb.c) */
+ void sweet_remote_bootloader(void);
+ void sweet_remote_reboot(void);
+@@ -3354,6 +3399,9 @@ static void
+ sweet_modem_start(void)
+ {
+ 	sweet_logo_show();
++	if (PE_halt_restart == NULL) {
++		PE_halt_restart = sweet_halt_restart;   /* power off / restart from iOS (Settings, slider) */
++	}
+ 	sm_rtc_sync();
+ 	miatoll_wifi_init();
+ 	int bl = 0;
