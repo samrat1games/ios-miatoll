@@ -1,0 +1,45 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 1ec2112..cfcebf8 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -457,7 +457,8 @@ sm_smem_item(uint16_t remote, uint32_t item, uint32_t *sizep)
+ 		vm_offset_t e = toc + 0x20 + 48 * i;
+ 		uint32_t off = sm_r32(e), size = sm_r32(e + 4);
+ 		uint16_t h0 = sm_r16(e + 12), h1 = sm_r16(e + 14);
+-		if (!size || !((h0 == 0 && h1 == remote) || (h1 == 0 && h0 == remote))) {
++		if (!size || !(remote == SM_HOST_GLOBAL ? h0 == remote && h1 == remote :
++		    (h0 == 0 && h1 == remote) || (h1 == 0 && h0 == remote))) {
+ 			continue;
+ 		}
+ 		vm_offset_t part = sm_smem + off;
+@@ -659,6 +660,21 @@ sm_smp2p_poll(void)
+ 			name[16] = 0;
+ 			last[e] = v;
+ 			printf("SWEET MODEM: smp2p in '%s' = %#x\n", name, v);
++			if (!strcmp(name, "slave-kernel") && (v & 1)) {
++				/* bit 0 = fatal error; Linux qcom_q6v5 prints SMEM item 421 (SSR reason of MSS) */
++				uint32_t rsz = 0;
++				vm_offset_t r = sm_smem_item(SM_HOST_GLOBAL, 421, &rsz);
++				char why[160];
++				uint32_t k = 0;
++				for (; r && k < rsz && k + 1 < sizeof(why); ++k) {
++					why[k] = *(volatile char *)(r + k);
++					if (!why[k]) {
++						break;
++					}
++				}
++				why[k] = 0;
++				printf("SWEET MODEM: FATAL, crash reason: %s\n", r ? why : "(no SMEM item 421)");
++			}
+ 		}
+ 	}
+ }
+@@ -1991,7 +2007,7 @@ tftp_client_rx(uint32_t slot, uint32_t node, uint32_t port, const uint8_t *q, ui
+ 		tftp_close((int)slot);
+ 		return;
+ 	}
+-	if (blk == 0 || (blk % 64) == 0) {
++	{
+ 		printf("SWEET TFTP: %s ACK %u (%llu bytes so far)\n", tftp_cl[slot].name, blk, tftp_cl[slot].sent);
+ 	}
+ 	tftp_cl[slot].idle = 0;

@@ -1,6 +1,13 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
-## Handoff 2026-10-24: Wi-Fi firmware TFTP stall - patch 0121, NOT booted yet
+## Handoff 2026-10-24 (later): 0121 booted (sweetmodem=1, run 40083464587) - modem CRASHES during WLANMDSP transfer; 0122
+- Observed: modem up, ACK 0 for wlanmdsp.mbn rsize request, modem posted 20 x 7716 intents (ids 30..49), we sent
+  537600 bytes (70 blocks) but stopped at block 20 "waiting for ACK" -> retransmitted windows; then smp2p
+  slave-kernel = 0x7 (bit 0 = FATAL) and the modem stopped reading the GLINK tx fifo.
+- 0122: on fatal print SMEM item 421 (global partition, like qcom_q6v5) = crash reason; log every TFTP ACK.
+  Next: read "SWEET MODEM: FATAL, crash reason" and the ACK sequence.
+
+## Handoff 2026-10-24: Wi-Fi firmware TFTP stall - patch 0121, booted, see above
 - Observed (logs/bridge.log): modem up, PDR listener ok (wlan_pd UNINIT), modem asks TFTP for wlanmdsp.mbn twice with
   rsize 0 (tsize probe, then client error 9 = normal abort), then RRQ with rsize 3844700 from port 0x48/0x4c - after
   that NO "done", no error, no WLFW. The modem posted 7716-byte intents (= 7680 blksize + 4 + 32), so it was waiting for DATA.
