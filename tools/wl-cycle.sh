@@ -10,6 +10,12 @@ sed -e 's/sweetmodem=0/sweetmodem=1/' -e "s/^rid=.*/rid=$rid/" tools/ci-boot.sh 
 rm -rf /tmp/kdl
 bash tools/.wl-boot.sh wl >/dev/null || { rm -f tools/.wl-boot.sh; echo "build of the boot image failed"; exit 1; }
 rm -f tools/.wl-boot.sh
+if ! fastboot devices | grep -q fastboot; then
+	echo "phone not in fastboot: asking iOS to restart into the bootloader (UDP 5141)"
+	printf bootloader | nc -u -w1 192.168.7.2 5141 || true
+	for i in $(seq 1 24); do fastboot devices | grep -q fastboot && break; sleep 5; done
+	fastboot devices | grep -q fastboot || { echo "phone did not reach fastboot: put it there by hand (Power+VolDown)"; exit 1; }
+fi
 start=$(($(wc -l < logs/bridge.log) + 1))
 fastboot boot shim/out/shim-boot-wl.img
 echo "booted, waiting for the phone's log..."
