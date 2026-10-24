@@ -1,0 +1,112 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 5a3716e..0c60e61 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1090,6 +1090,7 @@ gl_poll(void)
+ #define QRTR_TYPE_DATA      1u
+ #define QRTR_TYPE_HELLO     2u
+ #define QRTR_TYPE_NEW_SERVER 4u
++#define QRTR_TYPE_RESUME_TX 7u
+ #define QRTR_TYPE_NEW_LOOKUP 10u
+ #define QRTR_PORT_CTRL      0xfffffffeu
+ #define QRTR_LOCAL_NODE     1u
+@@ -1118,10 +1119,68 @@ static uint32_t qrtr_remote_node = QRTR_BCAST, qrtr_wlfw_node, qrtr_wlfw_port, q
+ static struct { uint32_t len; uint8_t b[8192]; } qrtr_txq[QRTR_TXQ];
+ static unsigned qrtr_txq_head, qrtr_txq_n;
+ 
++/*
++ * Flow control as Linux qrtr_tx_wait(): at most 10 DATA packets to one remote port, the 6th asks for
++ * confirmation (confirm_rx) and the remote's RESUME_TX lets the next 10 go. Without it the modem drops
++ * what comes after its quota (WLANMDSP.MBN stopped after block 10, one TFTP window).
++ */
++#define QRTR_FLOW_HIGH  10u
++#define QRTR_FLOW_N     8
++static struct { uint32_t node, port, pending, blocked; int used; } qrtr_flow[QRTR_FLOW_N];
++static unsigned qrtr_flow_next;
++
++static int
++qrtr_flow_find(uint32_t node, uint32_t port, int make)
++{
++	for (int i = 0; i < QRTR_FLOW_N; ++i) {
++		if (qrtr_flow[i].used && qrtr_flow[i].node == node && qrtr_flow[i].port == port) {
++			return i;
++		}
++	}
++	if (!make) {
++		return -1;
++	}
++	int i = (int)(qrtr_flow_next++ % QRTR_FLOW_N);
++	qrtr_flow[i].used = 1;
++	qrtr_flow[i].node = node;
++	qrtr_flow[i].port = port;
++	qrtr_flow[i].pending = 0;
++	qrtr_flow[i].blocked = 0;
++	return i;
++}
++
++/* send one QRTR packet (header first) on GLINK, unless its destination has used up its quota */
++static int
++qrtr_tx_pkt(uint8_t *pkt, uint32_t len)
++{
++	uint32_t h[8];
++	memcpy(h, pkt, 32);
++	int f = -1;
++	if (h[1] == QRTR_TYPE_DATA) {
++		f = qrtr_flow_find(h[6], h[7], 1);
++		if (qrtr_flow[f].pending >= QRTR_FLOW_HIGH) {
++			if (++qrtr_flow[f].blocked < 5000) {
++				return EAGAIN;
++			}
++			/* no RESUME_TX for a long time: send anyway, as before flow control */
++			printf("SWEET QRTR: no RESUME_TX from %u:%#x, sending on\n", h[6], h[7]);
++			qrtr_flow[f].pending = 0;
++		}
++		qrtr_flow[f].blocked = 0;
++		h[4] = qrtr_flow[f].pending == QRTR_FLOW_HIGH / 2;
++		memcpy(pkt + 16, &h[4], 4);
++	}
++	int e = gl_send(pkt, len);
++	if (!e && f >= 0) {
++		qrtr_flow[f].pending++;
++	}
++	return e;
++}
++
+ static void
+ qrtr_flush(void)
+ {
+-	while (qrtr_txq_n && !gl_send(qrtr_txq[qrtr_txq_head].b, qrtr_txq[qrtr_txq_head].len)) {
++	while (qrtr_txq_n && !qrtr_tx_pkt(qrtr_txq[qrtr_txq_head].b, qrtr_txq[qrtr_txq_head].len)) {
+ 		qrtr_txq_head = (qrtr_txq_head + 1) % QRTR_TXQ;
+ 		qrtr_txq_n--;
+ 	}
+@@ -1147,7 +1206,7 @@ qrtr_send(uint32_t type, uint32_t dst_node, uint32_t dst_port, uint32_t src_port
+ 		memcpy(pkt + 32, payload, plen);
+ 	}
+ 	qrtr_flush();
+-	if (!qrtr_txq_n && !gl_send(pkt, 32 + plen)) {
++	if (!qrtr_txq_n && !qrtr_tx_pkt(pkt, 32 + plen)) {
+ 		return 0;
+ 	}
+ 	if (qrtr_txq_n == QRTR_TXQ) {
+@@ -1167,6 +1226,20 @@ qrtr_rx(const uint8_t *pkt, uint32_t len)
+ 	}
+ 	uint32_t h[8];
+ 	memcpy(h, pkt, 32);
++	if (h[1] == QRTR_TYPE_RESUME_TX && len >= 32 + 12) {
++		/* Linux qrtr_tx_resume(): the remote port (client.node, client.port) took what was sent */
++		uint32_t c[3];
++		memcpy(c, pkt + 32, 12);
++		int f = qrtr_flow_find(c[1], c[2], 0);
++		if (gl_trace) {
++			printf("SWEET QRTR: RESUME_TX for %u:%#x (pending %u)\n", c[1], c[2], f >= 0 ? qrtr_flow[f].pending : 0);
++		}
++		if (f >= 0) {
++			qrtr_flow[f].pending = 0;
++		}
++		qrtr_flush();
++		return;
++	}
+ 	if (h[1] == QRTR_TYPE_DATA && h[7] == 0x4001u && len >= 32) {
+ 		rfs_request(h[2], h[3], pkt + 32, len - 32);
+ 		return;

@@ -1,5 +1,14 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-24 (night): 0123 trace booted -> QRTR flow control missing; 0124
+- Observed (0123 trace, kernel run 40087273675): blocks 1..10 go out, the modem ACKs 10; blocks 11..20 also reach the
+  modem's GLINK (RX_DONE for their intents) but it ACKs 10 again, forever, then the WLAN PD watchdog fires.
+  We never set confirm_rx and never got a RESUME_TX (type 7).
+- Guess: the modem's router drops DATA beyond a 10-packet quota per port without confirm_rx/RESUME_TX.
+- 0124: Linux qrtr_tx_wait()/qrtr_tx_resume(): per (node,port) at most 10 DATA packets, the 6th carries confirm_rx,
+  RESUME_TX resets; fallback after 5000 blocked tries sends on (log "no RESUME_TX"). Log "RESUME_TX for" during trace.
+- ci-boot.sh takes the newest run: a pages-build run can be newest -> pass the xnu run id (edit rid=) when that happens.
+
 ## Handoff 2026-10-24 (evening): 0122 booted - modem crash reason found; 0123 GLINK trace
 - Observed: "FATAL, crash reason: dog_virtual_root.c:92:User-PD grace timer expired for wlan_process (ASID: 1)".
   The WLAN PD never started because WLANMDSP.MBN never finished: the modem ACKed block 10 six times
