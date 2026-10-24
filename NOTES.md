@@ -1,5 +1,14 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-24 (late night): 0125+0126 booted (run 40089739371); 0127
+- 0125 works: RESUME_TX after every packet, windows advance without duplicate ACKs (ACK 10..70, up to 691200 bytes).
+  But the modem abandons the read and asks again from a new port (0x4c, 0x4e, ...) and the WLAN PD watchdog fires.
+  Guess: too slow - the 0123 per-packet trace (2-3 kprintf lines per packet over serial) blew the modem's timeout.
+- 0127: per-packet trace only with boot-arg sweetwltrace=1; a new RRQ for the same file from the same node closes the old
+  reader (slots leaked, only 4).
+- 0126 (keys): junk PMIC reads (pon 0x93 / gpio 0x34 = all keys down -> screenshots) dropped, 3 equal reads needed.
+  Check "SWEET KEYS: junk read" counts; root cause of the junk reads (concurrent SPMI use?) unknown.
+
 ## Handoff 2026-10-24 (night): 0123 trace booted -> QRTR flow control missing; 0124
 - Observed (0123 trace, kernel run 40087273675): blocks 1..10 go out, the modem ACKs 10; blocks 11..20 also reach the
   modem's GLINK (RX_DONE for their intents) but it ACKs 10 again, forever, then the WLAN PD watchdog fires.

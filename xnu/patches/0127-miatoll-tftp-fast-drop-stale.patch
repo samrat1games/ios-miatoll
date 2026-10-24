@@ -1,0 +1,44 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 58f171e..1a30536 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -826,7 +826,8 @@ static struct { uint32_t id, size; int used; } gl_rintent[64];   /* the modem ad
+ static int gl_nrint;
+ static unsigned gl_rxdone_log;
+ static uint32_t gl_req_pending, gl_req_wait;    /* RX_INTENT_REQ in flight: size, sends refused since */
+-static int gl_trace;                            /* log every packet and intent event (set during the WLAN firmware transfer) */
++static int gl_trace;                            /* log every packet and intent event (WLAN firmware transfer, sweetwltrace=1) */
++static int sm_wltrace;
+ 
+ static int
+ sm_is_wlanfw(const char *path)
+@@ -2000,6 +2001,20 @@ tftp_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
+ 		wsize = 1;
+ 	}
+ 	int i = 0;
++	static int wltrace_parsed;
++	if (!wltrace_parsed) {
++		wltrace_parsed = 1;
++		(void)PE_parse_boot_argn("sweetwltrace", &sm_wltrace, sizeof(sm_wltrace));
++	}
++	/* the modem gave up on an earlier read of the same file and asks again: that transfer is dead */
++	for (int k = 0; k < TFTP_NCLIENT; ++k) {
++		if (tftp_cl[k].used && !tftp_cl[k].writer && !writer && tftp_cl[k].node == node &&
++		    !strncmp(tftp_cl[k].name, file, sizeof(tftp_cl[k].name) - 1)) {
++			printf("SWEET TFTP: %s asked again, dropping the old transfer at block %u\n", tftp_cl[k].name,
++			    tftp_cl[k].blk);
++			tftp_close(k);
++		}
++	}
+ 	while (i < TFTP_NCLIENT && tftp_cl[i].used) {
+ 		++i;
+ 	}
+@@ -2021,7 +2036,7 @@ tftp_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
+ 	}
+ 	tftp_cl[i].used = 1;
+ 	if (!writer && rsize && sm_is_wlanfw(file)) {
+-		gl_trace = 1;
++		gl_trace = sm_wltrace;          /* per-packet log slows the transfer past the modem's timeout (0125) */
+ 	}
+ 	tftp_cl[i].writer = writer;
+ 	tftp_cl[i].node = node;
