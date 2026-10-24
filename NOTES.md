@@ -1,5 +1,12 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-24 (evening): 0122 booted - modem crash reason found; 0123 GLINK trace
+- Observed: "FATAL, crash reason: dog_virtual_root.c:92:User-PD grace timer expired for wlan_process (ASID: 1)".
+  The WLAN PD never started because WLANMDSP.MBN never finished: the modem ACKed block 10 six times
+  (we resent 11..20 each time, 460800 bytes total), so blocks 11+ never reach its TFTP client.
+- Our TFTP reader matches linux-msm/tqftpserv handle_reader() exactly -> suspect the GLINK/intent layer.
+- 0123: while wlanmdsp is transferred, log every gl_send (intent id/size, tftp block) and every RX_DONE.
+
 ## Handoff 2026-10-24 (later): 0121 booted (sweetmodem=1, run 40083464587) - modem CRASHES during WLANMDSP transfer; 0122
 - Observed: modem up, ACK 0 for wlanmdsp.mbn rsize request, modem posted 20 x 7716 intents (ids 30..49), we sent
   537600 bytes (70 blocks) but stopped at block 20 "waiting for ACK" -> retransmitted windows; then smp2p

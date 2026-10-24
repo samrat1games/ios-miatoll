@@ -1,0 +1,53 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index cfcebf8..c27309f 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -826,6 +826,7 @@ static struct { uint32_t id, size; int used; } gl_rintent[64];   /* the modem ad
+ static int gl_nrint;
+ static unsigned gl_rxdone_log;
+ static uint32_t gl_req_pending, gl_req_wait;    /* RX_INTENT_REQ in flight: size, sends refused since */
++static int gl_trace;                            /* log every packet and intent event (set during the WLAN firmware transfer) */
+ static uint8_t gl_msgbuf[8192];
+ static uint32_t gl_msglen;
+ 
+@@ -912,6 +913,11 @@ gl_send(const void *data, uint32_t len)
+ 	if (!e) {
+ 		gl_rintent[i].used = 1;
+ 	}
++	if (gl_trace) {
++		const uint8_t *d = data;
++		printf("SWEET GLTRACE: tx %u bytes into intent %u (size %u) -> %d, tftp op %u blk %u, %d intents\n", len, iid,
++		    gl_rintent[i].size, e, len >= 36 ? d[33] : 0, len >= 36 ? (d[34] << 8 | d[35]) : 0, gl_nrint);
++	}
+ 	return e;
+ }
+ 
+@@ -999,7 +1005,7 @@ gl_poll(void)
+ 		}
+ 		case GC_RX_DONE:
+ 		case GC_RX_DONE_W_REUSE:
+-			if (gl_rxdone_log++ < 20) {
++			if (gl_trace || gl_rxdone_log++ < 20) {
+ 				printf("SWEET GLINK: rx RX_DONE(%u) cid %u iid %u\n", cmd, p1, p2);
+ 			}
+ 			for (int i = 0; i < gl_nrint; ++i) {
+@@ -1795,6 +1801,9 @@ tftp_close(int i)
+ 		vnode_put(tftp_cl[i].vp);
+ 	}
+ 	printf("SWEET TFTP: %s done, %llu bytes\n", tftp_cl[i].name, tftp_cl[i].sent);
++	if (strstr(tftp_cl[i].name, "wlanmdsp")) {
++		gl_trace = 0;
++	}
+ 	memset(&tftp_cl[i], 0, sizeof(tftp_cl[i]));
+ }
+ 
+@@ -1931,6 +1940,9 @@ tftp_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
+ 		}
+ 	}
+ 	tftp_cl[i].used = 1;
++	if (!writer && rsize && strstr(file, "wlanmdsp")) {
++		gl_trace = 1;
++	}
+ 	tftp_cl[i].writer = writer;
+ 	tftp_cl[i].node = node;
+ 	tftp_cl[i].port = port;
