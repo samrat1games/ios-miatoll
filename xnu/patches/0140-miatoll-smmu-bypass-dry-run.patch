@@ -1,0 +1,16 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index c38d256..1fc5a63 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2527,6 +2527,11 @@ wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
+ 	if (smr < 0 || cb < 0) {
+ 		return 0;
+ 	}
++	if (on != 3) {
++		/* a boot with 0139 died right here: look only, write with sweetwlsmmu=3 once the bank is known to be ours */
++		printf("SWEET WLSMMU: dry run (sweetwlsmmu=3 writes)\n");
++		return 0;
++	}
+ 	sm_w32(g + cbbase + (uint32_t)cb * pg, 0);             /* CB SCTLR: M = 0, translation off */
+ 	sm_w32(g1 + 4 * (uint32_t)cb, 1u << 16);               /* CBAR: type 1, S1 translate + S2 bypass */
+ 	sm_w32(g + 0xc00 + 4 * (uint32_t)smr, (uint32_t)cb);   /* S2CR: type 0 (translate) to that bank */

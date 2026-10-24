@@ -1,5 +1,11 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-25 (later 8): SMMU bank choice
+- 0138: free SMR 70, but no bank with CBAR 0 and SCTLR 0 (reading all 61 SCTLRs was fine).
+- 0139 (pick a bank no valid S2CR points to, SCTLR.M 0, then write) -> log stops right after the WLFW steps, user saw
+  a panic (no photo): writing that bank probably faulted (hypervisor/secure bank).
+- 0140: dry run by default (dump banks "idx:CBAR/SCTLR*used", print the choice, no writes); sweetwlsmmu=3 writes.
+
 ## Handoff 2026-10-25 (later 7): FW_READY + MISSION MODE (0137); 0138 SMMU bypass bank
 - 0137 (run 40104433887): cal_report ok -> indications 0x2c (pin connect), 0x21 FW_READY; wlan_cfg ok; wlan_mode
   mission ok. SMMU: sCR0 0x210406 (USFCFG=1), IDR0 0x4c017e47, IDR1 0x6000003d (71 SMRs, 61 banks), no SMR for 0xc0
