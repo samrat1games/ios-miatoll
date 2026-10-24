@@ -1,0 +1,112 @@
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index c3b20a0..9c87ecd 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -755,6 +755,72 @@ ud_cmd_send(socket_t so, struct sockaddr_in *to, const char *text)
+ 	(void)sock_send(so, &msg, 0, &sent);
+ }
+ 
++/*
++ * "fput <name> <offset>\n<bytes>": write the bytes at <offset> of /private/var/miatoll/<name> (created; offset 0
++ * truncates). Answers "ok <offset + length>" or "err <errno>". tools/sweet-put.py sends whole files this way, e.g.
++ * the modem's EFS copies that the rmtfs server reads (MiatollTools could not write /Applications: no root).
++ */
++static int
++ud_fput(const char *pkt, size_t len, char *reply, size_t rlen)
++{
++	const char *nl = NULL;
++	for (size_t j = 0; j < len && j < 128 && !nl; ++j) {
++		if (pkt[j] == '\n') {
++			nl = pkt + j;
++		}
++	}
++	char name[48];
++	unsigned long long off = 0;
++	size_t i = 5, k = 0;
++	if (!nl) {
++		snprintf(reply, rlen, "err %d\n", EINVAL);
++		return EINVAL;
++	}
++	while (pkt + i < nl && pkt[i] != ' ' && k + 1 < sizeof(name)) {
++		char c = pkt[i++];
++		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_')) {
++			snprintf(reply, rlen, "err %d\n", EPERM);
++			return EPERM;
++		}
++		name[k++] = c;
++	}
++	name[k] = 0;
++	while (pkt + i < nl && pkt[i] == ' ') {
++		i++;
++	}
++	while (pkt + i < nl && pkt[i] >= '0' && pkt[i] <= '9') {
++		off = off * 10 + (unsigned long long)(pkt[i++] - '0');
++	}
++	if (!k || name[0] == '.') {
++		snprintf(reply, rlen, "err %d\n", EPERM);
++		return EPERM;
++	}
++	const char *data = nl + 1;
++	size_t dlen = len - (size_t)(data - pkt);
++	char path[96];
++	snprintf(path, sizeof(path), "/private/var/miatoll/%s", name);
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t vp = NULLVP;
++	int e = vnode_open(path, O_CREAT | FWRITE | (off == 0 ? O_TRUNC : 0), 0644, 0, &vp, ctx);
++	int resid = 0;
++	if (!e) {
++		if (dlen) {
++			e = vn_rdwr(UIO_WRITE, vp, (caddr_t)(uintptr_t)data, (int)dlen, (off_t)off, UIO_SYSSPACE, IO_NOAUTH,
++			    vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++		}
++		(void)vnode_close(vp, FWRITE, ctx);
++	}
++	if (e || resid) {
++		snprintf(reply, rlen, "err %d\n", e ? e : EIO);
++		return e ? e : EIO;
++	}
++	if (off == 0) {
++		printf("SWEET USB: fput %s started\n", path);
++	}
++	snprintf(reply, rlen, "ok %llu\n", off + dlen);
++	return 0;
++}
++
+ /*
+  * "prefsreset <domain>": /private/var/mobile/Library/Preferences/<domain>.plist is copied to <domain>.plist.sweetbak
+  * and emptied, so iOS starts from its defaults at the next boot. For settings that crash SpringBoard (CoreUI effects
+@@ -822,7 +888,7 @@ static void
+ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+ 	socket_t so = NULL;
+-	char buf[64];
++	static char buf[1600];   /* fput carries up to 1400 data bytes */
+ 
+ 	for (;;) {
+ 		if (!ud.configured) {
+@@ -863,6 +929,12 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 			continue;               /* timeout */
+ 		}
+ 		buf[got] = 0;
++		if (got > 5 && memcmp(buf, "fput ", 5) == 0) {
++			char reply[96];
++			(void)ud_fput(buf, got, reply, sizeof(reply));
++			ud_cmd_send(so, &from, reply);
++			continue;
++		}
+ 		while (got > 0 && (buf[got - 1] == '\n' || buf[got - 1] == '\r' || buf[got - 1] == ' ')) {
+ 			buf[--got] = 0;
+ 		}
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index f402ac4..0c155a4 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1404,7 +1404,7 @@ rfs_file_open(const char *name, vnode_t *vpp)
+ {
+ 	/* the copies in SM_EFS_DIR never reached the phone's root (ENOENT in boot 0112); the same files can be
+ 	 * installed as an app bundle with MiatollTools (tools/mk-efs-ipa.sh + tools/ipa-serve.py --no-check) */
+-	static const char *const dirs[] = {SM_EFS_DIR, "/Applications/MiatollEFS.app/"};
++	static const char *const dirs[] = {SM_EFS_DIR, "/private/var/miatoll/", "/Applications/MiatollEFS.app/"};
+ 	static int which = -1;
+ 	char path[96];
+ 	int e = ENOENT;
