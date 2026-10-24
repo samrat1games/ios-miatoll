@@ -1,0 +1,24 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index ddaf075..286e7d6 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3371,12 +3371,17 @@ sweet_power_off(void)
+ 	}
+ }
+ 
++/* pexpert.h keeps these out of bsd/: same declaration and values (kPEHaltCPU 0, kPERestartCPU 1) */
++extern int (*PE_halt_restart)(unsigned int type);
++#define SM_PE_HALT_CPU          0u
++#define SM_PE_RESTART_CPU       1u
++
+ static int
+ sweet_halt_restart(unsigned int type)
+ {
+-	if (type == kPEHaltCPU) {
++	if (type == SM_PE_HALT_CPU) {
+ 		sweet_power_off();
+-	} else if (type == kPERestartCPU) {
++	} else if (type == SM_PE_RESTART_CPU) {
+ 		sm_reboot_plain = 1;
+ 		sm_reboot_nomodem = 1;          /* the PMIC restart resets the modem too */
+ 		sweet_reboot_bootloader();
