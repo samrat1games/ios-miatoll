@@ -1,7 +1,7 @@
 diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
 --- a/bsd/kern/sweet_amfi.c
 +++ b/bsd/kern/sweet_amfi.c
-@@ -326,7 +326,10 @@
+@@ -326,7 +326,9 @@
  static int
  sweet_sandbox_priv_grant(kauth_cred_t cred __unused, int priv)
  {
