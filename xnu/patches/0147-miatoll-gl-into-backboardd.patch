@@ -1,0 +1,95 @@
+diff --git a/bsd/dev/miatoll_adreno.c b/bsd/dev/miatoll_adreno.c
+index cad9692..1019426 100644
+--- a/bsd/dev/miatoll_adreno.c
++++ b/bsd/dev/miatoll_adreno.c
+@@ -5161,6 +5161,7 @@ miatoll_adreno_thread(void *arg, wait_result_t result)
+ 	}
+ 	printf("adreno: firmware (" MIATOLL_GPU_FW_DIR "a618_gmu.bin) %s after %u s\n", s < wait_s ? "found" : "NOT found", s);
+ 	redwood_adreno_init();
++	adreno_starting = 0;
+ 	/* ios-miatoll: the USB log streams only after userland is up and its replay drops lines: say it again later */
+ 	sleep_ms(90 * 1000);
+ 	printf("adreno: summary: last step done %u, failed %u, the GPU %s, service RedwoodGPU %s\n", adreno_done,
+@@ -5169,6 +5170,47 @@ miatoll_adreno_thread(void *arg, wait_result_t result)
+ 	thread_block(THREAD_CONTINUE_NULL);
+ }
+ 
++/*
++ * ios-miatoll 0147: kern_exec.c asks this for every program it starts. backboardd (the window server)
++ * gets DYLD_INSERT_LIBRARIES=/private/var/miatoll/libredwood-gl.dylib (HackiOS userland/src/eagl.c on
++ * Mesa freedreno: CoreAnimation's EAGLContext drawn by the GPU through RedwoodGPU) when the GPU is
++ * kept on and the library is there; boot-arg gl=0: never. While the GPU is still being started
++ * (gpu=1), backboardd waits for it, up to 30 s. dyld honours the variable because of 0146.
++ */
++#define MIATOLL_GL_LIBRARY      MIATOLL_GPU_FW_DIR "libredwood-gl.dylib"
++static volatile int adreno_starting;
++
++const char *miatoll_gl_env(const char *path);
++const char *
++miatoll_gl_env(const char *path)
++{
++	static int said;
++	uint32_t gl = 1;
++	vnode_t vp = NULLVP;
++
++	if (path == NULL || strcmp(path, "/usr/libexec/backboardd") != 0) {
++		return NULL;
++	}
++	if (PE_parse_boot_argn("gl", &gl, sizeof(gl)) && gl == 0) {
++		return NULL;
++	}
++	for (unsigned waited = 0; adreno_starting && waited < 300; waited++) {
++		sleep_ms(100);
++	}
++	if (!redwood_gpu_service || vnode_lookup(MIATOLL_GL_LIBRARY, 0, &vp, vfs_context_kernel()) != 0) {
++		if (said++ < 4) {
++			printf("adreno: backboardd draws in software (%s)\n", redwood_gpu_service ? "no " MIATOLL_GL_LIBRARY :
++			    "no RedwoodGPU");
++		}
++		return NULL;
++	}
++	vnode_put(vp);
++	if (said++ < 4) {
++		printf("adreno: backboardd gets " MIATOLL_GL_LIBRARY ": CoreAnimation draws with the GPU\n");
++	}
++	return "DYLD_INSERT_LIBRARIES=" MIATOLL_GL_LIBRARY;
++}
++
+ void miatoll_adreno_start(void);
+ void
+ miatoll_adreno_start(void)
+@@ -5180,7 +5222,10 @@ miatoll_adreno_start(void)
+ 	    !(PE_parse_boot_argn("gpu", &value, sizeof(value)) && value)) {
+ 		return;
+ 	}
++	adreno_starting = 1;
+ 	if (kernel_thread_start(miatoll_adreno_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
++	} else {
++		adreno_starting = 0;
+ 	}
+ }
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 4e61160..7dc55f3 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5759,6 +5759,19 @@ exec_extract_strings(struct image_params *imgp)
+ 		imgp->ip_envc++;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* ios-miatoll 0147: the GPU's OpenGL ES library into backboardd (bsd/dev/miatoll_adreno.c) */
++	{
++		extern const char *miatoll_gl_env(const char *path);
++		const char *gl = miatoll_gl_env(imgp->ip_strings + strlen(EXECUTABLE_KEY));
++
++		if (gl != NULL && imgp->ip_argspace >= new_ptr_size &&
++		    exec_add_user_string(imgp, CAST_USER_ADDR_T(gl), UIO_SYSSPACE, TRUE) == 0) {
++			imgp->ip_argspace -= new_ptr_size;
++			imgp->ip_envc++;
++		}
++	}
++#endif
+ 	/* Save space for envv[] NULL terminator */
+ 	if (imgp->ip_argspace < new_ptr_size) {
+ 		error = E2BIG;
