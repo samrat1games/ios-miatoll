@@ -1,5 +1,11 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-25: 0128 booted (run 40095314681) - kernel reads WLANMDSP right; 0129
+- All 12 x 64 KiB FNV-1a of the re-read match the Mac file: data is not the problem.
+- Still: modem closes the read after 70 blocks (DEL_CLIENT), re-probes (rsize 0) and our OACK gets no answer
+  (in 0125 the re-probe was answered and a second full read started). tftp_client_rx dropped mismatched packets silently.
+- 0129: log every TFTP packet nobody expects (slot/node/port) and each WLANMDSP OACK with qrtr_send's result.
+
 ## Handoff 2026-10-24 (very late): 0127 booted (run 40090732727); 0128 read-back sums
 - The modem itself closes the WLANMDSP read (QRTR DEL_CLIENT) after ~70 blocks (537600 bytes, past 512 KiB), then
   probes the size again (rsize 0) and re-reads from seek 0 -> looks like a failed check of what it read, then the

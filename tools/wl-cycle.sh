@@ -27,6 +27,6 @@ for i in $(seq 1 90); do
 	sleep 10
 done
 sleep 30
-tail -n +$start logs/bridge.log | grep -a -E 'FATAL|wlanmdsp.mbn (done|stalled|ACK)|RESUME_TX|64K chunk|asked again|SWEET (WLFW|WLCE|WLSMMU)|intent for|refused' |
+tail -n +$start logs/bridge.log | grep -a -E 'FATAL|wlanmdsp.mbn (done|stalled|ACK)|RESUME_TX|64K chunk|asked again|unexpected packet|OACK|SWEET (WLFW|WLCE|WLSMMU)|intent for|refused' |
 	grep -v 'done, 0 bytes' | cut -c1-200 | awk '!seen[$0]++' | tail -60 > logs/wl-last.txt
 cat logs/wl-last.txt

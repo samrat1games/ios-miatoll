@@ -1,0 +1,27 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index eb526ab..754ba48 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2085,7 +2085,10 @@ tftp_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
+ 		if (have_seek) {
+ 			o = tftp_opt(b, o, "seek", seek);
+ 		}
+-		qrtr_send(QRTR_TYPE_DATA, node, port, TFTP_XPORT + (uint32_t)i, b, o);
++		int oe = qrtr_send(QRTR_TYPE_DATA, node, port, TFTP_XPORT + (uint32_t)i, b, o);
++		if (oe || sm_is_wlanfw(file)) {
++			printf("SWEET TFTP: OACK %u bytes to %u:%#x from %#x -> %d\n", o, node, port, TFTP_XPORT + (uint32_t)i, oe);
++		}
+ 	} else if (writer) {
+ 		uint8_t a[4] = {0, TFTP_ACK, 0, 0};
+ 		qrtr_send(QRTR_TYPE_DATA, node, port, TFTP_XPORT + (uint32_t)i, a, 4);
+@@ -2102,6 +2105,10 @@ tftp_client_rx(uint32_t slot, uint32_t node, uint32_t port, const uint8_t *q, ui
+ {
+ 	if (slot >= TFTP_NCLIENT || !tftp_cl[slot].used || tftp_cl[slot].node != node || tftp_cl[slot].port != port ||
+ 	    qlen < 4) {
++		/* nobody expects this packet: say so, a silent drop hid the modem's answers before */
++		printf("SWEET TFTP: unexpected packet to slot %u from %u:%#x (slot used %d, expects %u:%#x), op %u blk %u, %u bytes\n",
++		    slot, node, port, slot < TFTP_NCLIENT ? tftp_cl[slot].used : -1, slot < TFTP_NCLIENT ? tftp_cl[slot].node : 0,
++		    slot < TFTP_NCLIENT ? tftp_cl[slot].port : 0, qlen >= 2 ? q[1] : 0, qlen >= 4 ? (q[2] << 8 | q[3]) : 0, qlen);
+ 		return;
+ 	}
+ 	uint16_t op = (uint16_t)(q[0] << 8 | q[1]), blk = (uint16_t)(q[2] << 8 | q[3]);
