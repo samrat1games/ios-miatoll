@@ -17,6 +17,9 @@ Steps:
    Caution: steps 11/12/19 are TZ SMCs; the modem thread does SMCs at ~70 s - run the GPU before it or with sweetmodem=0.
    Step 22's picture is only sampled in the log (SweetFramebuffer owns the panel).
    **0143** build fix; CI run 40112769440 GREEN (0142+0143). Not booted yet.
+   **adreno=10 BOOTED 2026-10-24** (kernel run 40112769440, `EXTRA_ARGS="adreno=10 adreno_pause=300 adreno_watch=5"` via ci-boot.sh lines 13-17):
+   steps 1-10 all done, no panic, system went on. cmd-db at 0x80820000 read; cx_gmu measured 200.001 MHz; GPU SMMU idr0 0x48016605;
+   GMU DTCM write/readback ok. Next: GPU firmware into /private/var/miatoll/gpu/ (user OK) -> adreno=21.
 2. DDR BCM vote from redwood_cpufreq.c (cmd_db 0x80820000) - only the vote, our CPU freq is OSM not EPSS.
 3. RedwoodGPU.cpp as an IOKit service: needs their MiniIOSurface -> map to the real IOSurface of iOS 16.7 (biggest gap).
 4. Userland: Mesa freedreno build (mk-mesa.sh) + their GL/CoreAnimation injection, into our root via the tweak flow.
