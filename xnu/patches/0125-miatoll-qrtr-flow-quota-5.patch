@@ -1,0 +1,22 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 0c60e61..58f171e 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1124,7 +1124,7 @@ static unsigned qrtr_txq_head, qrtr_txq_n;
+  * confirmation (confirm_rx) and the remote's RESUME_TX lets the next 10 go. Without it the modem drops
+  * what comes after its quota (WLANMDSP.MBN stopped after block 10, one TFTP window).
+  */
+-#define QRTR_FLOW_HIGH  10u
++#define QRTR_FLOW_HIGH  5u      /* Linux allows 10; this modem dropped packets 7..10 of a window (0124) */
+ #define QRTR_FLOW_N     8
+ static struct { uint32_t node, port, pending, blocked; int used; } qrtr_flow[QRTR_FLOW_N];
+ static unsigned qrtr_flow_next;
+@@ -1167,7 +1167,7 @@ qrtr_tx_pkt(uint8_t *pkt, uint32_t len)
+ 			qrtr_flow[f].pending = 0;
+ 		}
+ 		qrtr_flow[f].blocked = 0;
+-		h[4] = qrtr_flow[f].pending == QRTR_FLOW_HIGH / 2;
++		h[4] = 1;                       /* every packet asks for RESUME_TX: the quota is reset as soon as possible */
+ 		memcpy(pkt + 16, &h[4], 4);
+ 	}
+ 	int e = gl_send(pkt, len);
