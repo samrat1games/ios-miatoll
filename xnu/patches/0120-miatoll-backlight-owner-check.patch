@@ -1,0 +1,18 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 0c155a4..c68a74c 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2989,6 +2989,13 @@ sm_bl_apply(unsigned level)
+ 	if (sp_wled_apid == SP_NO_APID) {
+ 		return ENODEV;
+ 	}
++	/* a channel the apps processor does not own (SPMI_PERIPHn_2OWNER_TABLE owner != 0) hangs the CPU on the first
++	 * register access (the MiatollTools slider froze the phone with apid 0xd5): refuse instead */
++	uint32_t owner = sm_r32(sp_cnfg + 0x700u + 4u * sp_wled_apid) & 7u;
++	if (owner != 0) {
++		printf("SWEET BL: apid %#x belongs to EE %u, not the apps processor: brightness not changed\n", sp_wled_apid, owner);
++		return EPERM;
++	}
+ 	int e = sp_write(sp_wled_apid, 0x53, (level & 0xff) | (((level >> 8) & 0xf) << 8), 2);
+ 	if (!e) {
+ 		e = sp_write(sp_wled_apid, 0x65, 1, 1);
