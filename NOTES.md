@@ -20,6 +20,11 @@ Steps:
    **adreno=10 BOOTED 2026-10-24** (kernel run 40112769440, `EXTRA_ARGS="adreno=10 adreno_pause=300 adreno_watch=5"` via ci-boot.sh lines 13-17):
    steps 1-10 all done, no panic, system went on. cmd-db at 0x80820000 read; cx_gmu measured 200.001 MHz; GPU SMMU idr0 0x48016605;
    GMU DTCM write/readback ok. Next: GPU firmware into /private/var/miatoll/ (user OK) -> adreno=21.
+   **adreno=21 BOOTED 2026-10-24 23:02** (kernel 0144, run 40117282883; firmware from the phone's vendor partition via
+   OrangeFox -> local `fw-gpu/` (gitignored) -> `tools/sweet-put.py` -> /private/var/miatoll/): ALL 21 STEPS DONE. GMU fw
+   loaded, HFI init/version/speed+bus tables accepted, 3D core clock measured 267 MHz, zap shader via TZ ok, CP started,
+   3D core left secure mode and wrote 0x600dc0de to our page on command; GPU SMMU no faults; stopped after watch, no panic.
+   Next: gpu=1 (kept on; needs a RedwoodGPU service to be useful), then items 2-4.
 2. DDR BCM vote from redwood_cpufreq.c (cmd_db 0x80820000) - only the vote, our CPU freq is OSM not EPSS.
 3. RedwoodGPU.cpp as an IOKit service: needs their MiniIOSurface -> map to the real IOSurface of iOS 16.7 (biggest gap).
 4. Userland: Mesa freedreno build (mk-mesa.sh) + their GL/CoreAnimation injection, into our root via the tweak flow.
