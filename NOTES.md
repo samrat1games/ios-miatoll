@@ -1,5 +1,17 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-24 (very late): 0127 booted (run 40090732727); 0128 read-back sums
+- The modem itself closes the WLANMDSP read (QRTR DEL_CLIENT) after ~70 blocks (537600 bytes, past 512 KiB), then
+  probes the size again (rsize 0) and re-reads from seek 0 -> looks like a failed check of what it read, then the
+  PD watchdog. ELF: hash segment at 4096..11000, code segment 2 from 262144 (3 MB).
+- 0127 dropped the old read on the re-request (fine: the modem had closed it); the following probe got no reply (open).
+- Disk of the Mac was full (bridge died, wl-cycle could not write): keep >= 5 GB free.
+- 0128: on close, the kernel re-reads the first 1 MiB of wlanmdsp.mbn and prints FNV-1a per 64 KiB. Mac values
+  (research/modem/fs/IMAGE/WLANMDSP.MBN): 0 0x39817394357d960, 1-3 0xeb05052ea5b62325, 4 0xb62aba8e73f4dec8,
+  5 0x1a483811c033ec23, 6 0x8910bdca1f3b18ec, 7 0xaa700ca44bb3e585, 8 0x4b728dcfcd86e101, 9 0x867249094c596b38,
+  10 0xf84ee42920eea78e, 11 0x8026b04156924b89, 12 0x3f4a44f6d514a92f, 13 0x78e7bd4eb88a4b8, 14 0x677c19aedd915429,
+  15 0x1d0ebadcb1ba334c.
+
 ## Handoff 2026-10-24 (late night): 0125+0126 booted (run 40089739371); 0127
 - 0125 works: RESUME_TX after every packet, windows advance without duplicate ACKs (ACK 10..70, up to 691200 bytes).
   But the modem abandons the read and asks again from a new port (0x4c, 0x4e, ...) and the WLAN PD watchdog fires.

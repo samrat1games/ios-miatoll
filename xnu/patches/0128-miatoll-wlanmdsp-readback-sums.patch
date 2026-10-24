@@ -1,0 +1,36 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 1a30536..eb526ab 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1878,10 +1878,30 @@ tftp_error(uint32_t node, uint32_t port, uint32_t src_port, uint16_t code, const
+ static void
+ tftp_close(int i)
+ {
++	printf("SWEET TFTP: %s done, %llu bytes\n", tftp_cl[i].name, tftp_cl[i].sent);
++	if (tftp_cl[i].vp && !tftp_cl[i].writer && tftp_cl[i].sent && sm_is_wlanfw(tftp_cl[i].name)) {
++		/* the modem drops WLANMDSP after ~512 KiB and starts over: is what this kernel reads right?
++		 * compare with the per-64 KiB FNV-1a of the file on the Mac (NOTES.md) */
++		static int wl_sums_done;
++		for (uint64_t c = 0; !wl_sums_done && c < 16 && c * 65536 < tftp_cl[i].fsize; ++c) {
++			uint64_t fnv = 0xcbf29ce484222325ULL;
++			for (uint64_t o = c * 65536; o < (c + 1) * 65536 && o < tftp_cl[i].fsize; o += 4096) {
++				uint64_t n = tftp_cl[i].fsize - o < 4096 ? tftp_cl[i].fsize - o : 4096;
++				if (sm_pread(tftp_cl[i].vp, tftp_buf, n, (off_t)o)) {
++					printf("SWEET TFTP: wlanmdsp re-read failed at %llu\n", o);
++					break;
++				}
++				for (uint64_t k = 0; k < n; ++k) {
++					fnv = (fnv ^ tftp_buf[k]) * 0x100000001b3ULL;
++				}
++			}
++			printf("SWEET TFTP: wlanmdsp 64K chunk %llu fnv %#llx\n", c, fnv);
++		}
++		wl_sums_done = 1;
++	}
+ 	if (tftp_cl[i].vp) {
+ 		vnode_put(tftp_cl[i].vp);
+ 	}
+-	printf("SWEET TFTP: %s done, %llu bytes\n", tftp_cl[i].name, tftp_cl[i].sent);
+ 	if (sm_is_wlanfw(tftp_cl[i].name)) {
+ 		gl_trace = 0;
+ 	}
