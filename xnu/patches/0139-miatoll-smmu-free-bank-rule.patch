@@ -1,0 +1,33 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 54a5f80..c38d256 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2501,9 +2501,26 @@ wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
+ 			smr = i;
+ 		}
+ 	}
++	/* banks in use = the targets of valid stream matches with S2CR type translate (Linux keeps its own map) */
++	static uint8_t used[256];
++	for (uint32_t i = 0; i < nsmr && i < 128; ++i) {
++		uint32_t m = sm_r32(g + 0x800 + 4 * i), c = sm_r32(g + 0xc00 + 4 * i);
++		if ((m & 0x80000000u) && ((c >> 16) & 3) == 0) {
++			used[c & 0xff] = 1;
++		}
++	}
++	for (uint32_t i = 0; i < ncb; i += 8) {
++		char line[200];
++		uint32_t o = 0;
++		for (uint32_t k = i; k < i + 8 && k < ncb && o + 24 < sizeof(line); ++k) {
++			o += (uint32_t)snprintf(line + o, sizeof(line) - o, " %u:%x/%x%s", k, sm_r32(g1 + 4 * k),
++			    sm_r32(g + cbbase + k * pg), used[k] ? "*" : "");
++		}
++		printf("SWEET WLSMMU: banks%s\n", line);
++	}
+ 	for (int i = (int)ncb - 1; i >= 0 && cb < 0; --i) {
+-		if (!sm_r32(g1 + 4 * (uint32_t)i) && !sm_r32(g + cbbase + (uint32_t)i * pg)) {
+-			cb = i;
++		if (!used[i] && !(sm_r32(g + cbbase + (uint32_t)i * pg) & 1u)) {
++			cb = i;                         /* no stream points here and translation is off */
+ 		}
+ 	}
+ 	printf("SWEET WLSMMU: page %#x, banks at %#x, free SMR %d, free bank %d\n", pg, cbbase, smr, cb);
