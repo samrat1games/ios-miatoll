@@ -31,6 +31,11 @@ Steps:
    ("adreno: summary: ... service RedwoodGPU REGISTERED") because the USB log streams only once userland is up and the
    "log" replay (`printf log | nc -u -w1 192.168.7.2 5141`) drops chunks. CI green 40122874698. First gpu=1 boot
    (40120609318): steps 1-18 seen in the lossy replay, end not seen -> retest with the summary line.
+   **gpu=1 BOOTED 2026-10-25 (run 40122874698, `EXTRA_ARGS="gpu=1 adreno_pause=0"`): steps 1-21 done, "THE GPU STAYS ON",
+   "RedwoodGPU: service registered", summary "last step done 21, failed 0 ... REGISTERED"; iOS runs on, no panic.**
+   Step 3 (next): HackiOS userland/src/inject.c + eagl.c (libredwood-gl: EAGLContext for CoreAnimation's GLES renderer in
+   backboardd) use iOS 16.5 20F66 iPhone10,3 dyld-cache addresses; ours is 16.7 20H392 -> re-find them, and load via our
+   tweak flow (no launchd daemon of our own; root edits need the user's OK).
    **Mesa (step 2)**: `tools/mk-mesa.sh` (macOS: Xcode iPhoneOS SDK, minos 16.0, brew bison) + `tools/mesa/*` (HackiOS)
    -> `mesa-build/out/libOSMesa.8.dylib` (gitignored; 14.8 MB, 1296 gl*, softpipe+freedreno, opens "RedwoodGPU"). BUILT.
 2. DDR BCM vote from redwood_cpufreq.c (cmd_db 0x80820000) - only the vote, our CPU freq is OSM not EPSS.
