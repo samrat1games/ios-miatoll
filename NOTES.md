@@ -1,5 +1,10 @@
 # miatoll (curtana / Redmi Note 9S, SM6250) port notes
 
+## Handoff 2026-10-25 (later 9): SMMU banks seen (0140); 0141 shares a bypass bank
+- 0140 dump: banks 0-3 CBAR 0x1f000 (type 1) SCTLR 0xe0 (M off), used by valid streams = boot loader bypass banks;
+  banks 4-60 CBAR 0 with random SCTLR (noise, not accessible to us; writing 60 panicked in 0139). Free SMR 70.
+- 0141: SMR70 = valid|mask 1|id 0xc0, S2CR70 = translate -> first used bypass bank (0); only global SMR/S2CR writes.
+
 ## Handoff 2026-10-25 (later 8): SMMU bank choice
 - 0138: free SMR 70, but no bank with CBAR 0 and SCTLR 0 (reading all 61 SCTLRs was fine).
 - 0139 (pick a bank no valid S2CR points to, SCTLR.M 0, then write) -> log stops right after the WLFW steps, user saw

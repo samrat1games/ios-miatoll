@@ -1,0 +1,33 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 1fc5a63..466f882 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2518,6 +2518,28 @@ wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
+ 		}
+ 		printf("SWEET WLSMMU: banks%s\n", line);
+ 	}
++	/*
++	 * 0140's dump: banks 0-3 are the boot loader's bypass banks (CBAR type 1, SCTLR 0xe0 = M off, streams point
++	 * there); 4-60 read back noise (not ours: writing 60 panicked in 0139). Share a bypass bank: no bank writes.
++	 */
++	int shared = -1;
++	for (uint32_t i = 0; i < ncb && shared < 0; ++i) {
++		uint32_t cbar = sm_r32(g1 + 4 * i), sctlr = sm_r32(g + cbbase + i * pg);
++		if (used[i] && ((cbar >> 16) & 3) == 1 && !(sctlr & 1u)) {
++			shared = (int)i;
++		}
++	}
++	if (shared >= 0 && smr >= 0) {
++		sm_w32(g + 0xc00 + 4 * (uint32_t)smr, (uint32_t)shared);       /* S2CR: translate via that bank */
++		__asm__ volatile("dsb sy" : : : "memory");
++		sm_w32(g + 0x800 + 4 * (uint32_t)smr, 0x80000000u | (1u << 16) | 0xc0u);
++		__asm__ volatile("dsb sy" : : : "memory");
++		uint32_t rs = sm_r32(g + 0x800 + 4 * (uint32_t)smr), rc = sm_r32(g + 0xc00 + 4 * (uint32_t)smr);
++		int okk = (rs & 0x8000ffffu) == 0x800000c0u && (rc & 0x300ffu) == (uint32_t)shared;
++		printf("SWEET WLSMMU: SID 0xc0 -> shared bypass bank %d: SMR%d %#x S2CR %#x -> %s\n", shared, smr, rs, rc,
++		    okk ? "physical DMA should work" : "refused");
++		return okk;
++	}
+ 	for (int i = (int)ncb - 1; i >= 0 && cb < 0; --i) {
+ 		if (!used[i] && !(sm_r32(g + cbbase + (uint32_t)i * pg) & 1u)) {
+ 			cb = i;                         /* no stream points here and translation is off */
