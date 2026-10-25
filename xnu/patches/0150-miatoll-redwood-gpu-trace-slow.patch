@@ -1,0 +1,56 @@
+diff --git a/iokit/Kernel/arm/RedwoodGPU.cpp b/iokit/Kernel/arm/RedwoodGPU.cpp
+index e78f9f2..dc2c58f 100644
+--- a/iokit/Kernel/arm/RedwoodGPU.cpp
++++ b/iokit/Kernel/arm/RedwoodGPU.cpp
+@@ -217,6 +217,7 @@ struct redwood_worked {
+ static IOLock * gGPULock;                       /* around everything that is the GPU's (redwood_gpu_...) */
+ static bool gGPUReported;
+ static bool gGPUCached;                         /* boot-arg gpu_cached=1 */
++static uint32_t gTraceSlow = 300;               /* 0150: boot-arg gpu_trace_ms (0: no waits) */
+ static uint32_t gGPUKeep = 1;                   /* boot-arg gpu_keep=0 (a test): none kept; gpu_keep=2: kept ones cleared when given again */
+ static bool gGPUSaidSetIova;                    /* MSM_INFO_SET_IOVA has been refused out loud once */
+ 
+@@ -396,6 +397,7 @@ RedwoodGPUStart(void)
+ 	gGPUCached = PE_parse_boot_argn("gpu_cached", &cached, sizeof(cached)) && cached != 0;
+ 	PE_parse_boot_argn("touch_lat", &gWaitLines, sizeof(gWaitLines));
+ 	PE_parse_boot_argn("gpu_keep", &gGPUKeep, sizeof(gGPUKeep));
++	PE_parse_boot_argn("gpu_trace_ms", &gTraceSlow, sizeof(gTraceSlow));
+ 	gGPULock = IOLockAlloc();
+ 	gpu = OSTypeAlloc(RedwoodGPU);
+ 	if (gpu == NULL || provider == NULL || !gpu->init() || !gpu->attach(provider)) {
+@@ -535,6 +537,10 @@ RedwoodGPUUserClient::initWithTask(task_t owningTask, void * securityID, UInt32
+ bool
+ RedwoodGPUUserClient::start(IOService * provider)
+ {
++	IOLog("RedwoodGPU: a client opens it\n");
++	if (gTraceSlow) {
++		IOSleep(gTraceSlow);
++	}
+ 	if (!redwood_gpu_ready() || !IOUserClient::start(provider)) {
+ 		return false;
+ 	}
+@@ -1196,6 +1202,14 @@ RedwoodGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options, I
+ 	struct gpu_buffer * b;
+ 	IOReturn ret = kIOReturnBadArgument;
+ 
++	if (gTraceSlow) {
++		static uint32_t traced;
++
++		if (traced++ < 32) {
++			IOLog("RedwoodGPU: map buffer %u\n", type);
++			IOSleep(gTraceSlow);
++		}
++	}
+ 	IOLockLock(gGPULock);
+ 	b = buffer(type);
+ 	if (b != NULL) {
+@@ -1248,6 +1262,9 @@ RedwoodGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
+ 		if (traced < 64) {
+ 			traced++;
+ 			IOLog("RedwoodGPU: request %#x (%zu bytes) word0 %#x\n", selector, size, *(uint32_t *) &r);
++			if (gTraceSlow) {
++				IOSleep(gTraceSlow);    /* 0150: time for the USB log to send it before whatever comes next */
++			}
+ 		}
+ 	}
+ 
