@@ -1,0 +1,20 @@
+diff --git a/iokit/Kernel/arm/RedwoodGPU.cpp b/iokit/Kernel/arm/RedwoodGPU.cpp
+index 056cf73..e78f9f2 100644
+--- a/iokit/Kernel/arm/RedwoodGPU.cpp
++++ b/iokit/Kernel/arm/RedwoodGPU.cpp
+@@ -1241,6 +1241,15 @@ RedwoodGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
+ 	}
+ 	bzero(&r, sizeof(r));
+ 	memcpy(&r, args->structureInput, size);
++	{
++		/* ios-miatoll 0149: the first requests of the run, each before it is done (a hang says where) */
++		static uint32_t traced;
++
++		if (traced < 64) {
++			traced++;
++			IOLog("RedwoodGPU: request %#x (%zu bytes) word0 %#x\n", selector, size, *(uint32_t *) &r);
++		}
++	}
+ 
+ 	switch (selector) {
+ 	case kMsmGetParam:
