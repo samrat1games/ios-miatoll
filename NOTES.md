@@ -42,6 +42,36 @@ Steps:
 3. RedwoodGPU.cpp as an IOKit service: needs their MiniIOSurface -> map to the real IOSurface of iOS 16.7 (biggest gap).
 4. Userland: Mesa freedreno build (mk-mesa.sh) + their GL/CoreAnimation injection, into our root via the tweak flow.
 
+## Boot menu "iOS-Miatoll UEFI" - design (2026-10-25, not built yet)
+Research: HackiOS = Mu-Silicium 3.6 UEFI (Qualcomm DXE blobs from xbl: USB/UFS/display) + `xnuloader/loader.c`
+(EFI app) that speaks the **fastboot protocol** over USB (getvar, download:, upload, `oem run/stop/screenshot/...`),
+so the host uses stock `fastboot`. Their menu photo (Xiaomi Pad 5) is not in their repo.
+Ours: no UEFI. Build the menu into `shim/` (bare metal, MMU off, polled), behind `MENU=1 shim/build.sh` so the
+normal ci-boot.sh images stay unchanged. Pieces:
+1. UI: dark screen, small logo, "iOS-Miatoll UEFI", rounded items (icon+title+subtitle), footer "Volume to select /
+   Power to open", "REDMI NOTE 9S". Anti-aliased glyphs/icons pre-rendered at build time (python -> alpha header,
+   like tools/mklogo.py); redraw only the 2 changed items (device-memory writes are slow).
+   Items: Boot iOS (embedded payload cmdline) | Boot iOS with GPU (+`gpu=1 adreno_pause=0`) | Boot iOS safe (+`gl=0`)
+   | Diagnostics (UFS/partitions, USB state, log tail) | USB Storage (later) | Fastboot | Recovery | Power off.
+2. Keys: PM6150 PON via SPMI, same registers as kernel `bsd/dev/sweet_keys.c` (patch 0060 + 0126 junk filter).
+3. Boot: refactor `loader_boot()` to take (payload addr, size, extra cmdline) instead of the DT initrd.
+4. USB = fastboot gadget: port the polled DWC3 code of kernel `bsd/dev/sweet_usb.c` (0072-0075: ABL leaves GDSC,
+   clocks, PHY on; soft reset, own event buffer, QSCRATCH VBUS override) with one bulk IN/OUT pair, interface
+   class ff/42/03 so host `fastboot` finds it. Commands:
+   - `fastboot boot shim-boot-X.img` -> download: + boot: parse boot.img v2, ramdisk = SWEETXNU payload -> loader
+     (same command whether the phone is in ABL or in our menu; ci-boot.sh images work as is);
+     `fastboot oem cmdline <args>` adds boot-args for the next boot;
+   - `fastboot oem log` / `oem panic` stage the 4 MiB console ring (last 1025 blocks of userdata, patch 0047,
+     decode with tools/sweet-log.py) -> `fastboot get_staged out.bin` (replaces OrangeFox + sweet-log-pull.sh);
+     `fetch:<part>:<off>:<size>` read-only partition reads (shim/ufs.c has SCSI READ + GPT);
+   - push into the iOS root: no APFS/HFS writer in the shim -> `oem put <name>` collects files into a RAM inbox
+     passed to the kernel (ADT/boot-arg); a small kernel patch writes them to /private/var/miatoll after the root
+     mount (same code path as 0116 fput); pull = `oem log`-style staging of a kernel outbox later;
+   - `reboot`, `reboot-bootloader`, `reboot-recovery`, `oem poweroff`: IMEM restart reason (board.h
+     IMEM_RESTART_REASON, 0x77665500 bootloader / 0x77665502 recovery) + PSCI reset / PS_HOLD (shim reset()).
+5. USB Storage (mass storage of userdata) needs UFS WRITE: later, only with the user's OK.
+Test: `fastboot boot shim/out/shim-boot-menu.img` only (never flash without the user's OK).
+
 ## Handoff 2026-10-25 (later 9): SMMU banks seen (0140); 0141 shares a bypass bank
 - 0140 dump: banks 0-3 CBAR 0x1f000 (type 1) SCTLR 0xe0 (M off), used by valid streams = boot loader bypass banks;
   banks 4-60 CBAR 0 with random SCTLR (noise, not accessible to us; writing 60 panicked in 0139). Free SMR 70.
