@@ -1,0 +1,80 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 7f90c56..f7b6638 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -84,6 +84,9 @@ SweetSurface::free()
+ 		OSAddAtomic64(-(SInt64)allocSize, (volatile SInt64 *)&sweet_surface_wired);
+ 	}
+ 	OSSafeReleaseNULL(kernelMap);
++	if (wrapped && memory != NULL) {
++		memory->complete();
++	}
+ 	OSSafeReleaseNULL(memory);
+ 	OSSafeReleaseNULL(state);
+ 	OSObject::free();
+@@ -633,9 +636,12 @@ IOSurfaceRootUserClient::returnSurface(SweetSurface *s, IOExternalMethodArgument
+ 		ret = kIOReturnNoMemory;
+ 	} else {
+ 		sweet_surface_fill_result(s, ref, out);
+-		if (existing) {
+-			put64(out, 0x00, ~0ULL);        /* "already yours": use the cached client */
+-		}
++		/*
++		 * (0151: no "already yours" (base ~0) any more: a client object IOSurface.framework built
++		 * from such an answer had no shared page (+0x70 NULL), and CoreAnimation's OpenGL ES renderer
++		 * crashed reading its bulk attachments. The full answer is the same mapping again.)
++		 */
++		(void)existing;
+ 		ret = sweet_struct_out(args, out, SWEET_SURFACE_RESULT_SIZE);
+ 		IOFreeData(out, SWEET_SURFACE_RESULT_SIZE);
+ 	}
+@@ -684,7 +690,36 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 	}
+ 	s->parentID = args->scalarInputCount > 0 ? (uint32_t)args->scalarInput[0] : 0;
+ 	ret = sweet_surface_layout(s, props);
+-	if (ret == kIOReturnSuccess) {
++	OSNumber *wrap = OSDynamicCast(OSNumber, props->getObject("IOSurfaceAddress"));
++	if (ret == kIOReturnSuccess && wrap != NULL) {
++		/*
++		 * 0151: a surface around memory the caller has already (CoreAnimation's OpenGL ES renderer
++		 * wraps pictures it holds, HackiOS MiniIOSurface.cpp): the pixels ARE that memory, wired
++		 * while the surface lives.
++		 */
++		uint32_t size = sweet_dict_u32(props, "IOSurfaceAllocSize", s->allocSize);
++		IOMemoryDescriptor *um = NULL;
++		IOReturn held = kIOReturnNoMemory;
++
++		for (unsigned attempt = 0; attempt < 2 && held != kIOReturnSuccess; attempt++) {
++			OSSafeReleaseNULL(um);
++			um = IOMemoryDescriptor::withAddressRange(wrap->unsigned64BitValue(), size,
++			    attempt == 0 ? kIODirectionInOut : kIODirectionOut, current_task());
++			held = um != NULL ? um->prepare() : kIOReturnNoMemory;
++		}
++		if (held != kIOReturnSuccess) {
++			OSSafeReleaseNULL(um);
++			ret = kIOReturnVMError;
++		} else {
++			s->allocSize = size;
++			s->memory = um;
++			s->wrapped = true;
++			s->mapCache = kIOMapDefaultCache;
++			if (!sweet_surface_publish(s)) {
++				ret = kIOReturnNoResources;
++			}
++		}
++	} else if (ret == kIOReturnSuccess) {
+ 		IOBufferMemoryDescriptor *mem = NULL;
+ 		if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
+ 		    s->allocSize <= SWEET_SURFACE_WIRED_MAX) {
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index 720b0ef..9995ddc 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -39,6 +39,7 @@ public:
+ 	IOOptionBits              mapCache;     /* cache mode for user mappings */
+ 	IOBufferMemoryDescriptor *state;        /* shared state page, read-only for users */
+ 	IOMemoryMap              *kernelMap;    /* lazily created for kernel copies */
++	bool                      wrapped;      /* 0151: memory is the creator's own (IOSurfaceAddress), prepared */
+ 	volatile uint32_t         drawn;        /* RedwoodGPU: the last GPU submission naming it (0: none) */
+ 
+ 	bool init() APPLE_KEXT_OVERRIDE { return OSObject::init(); }

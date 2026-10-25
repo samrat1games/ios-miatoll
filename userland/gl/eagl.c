@@ -3960,8 +3960,9 @@ my_attachImage(id self, SEL selector, unsigned long target, IOSurfaceRef surface
 	clear_now(e);
 	glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
 	pixels = IOSurfaceGetPixelFormat(surface);
-	if (target != GL_TEXTURE_2D || texture == 0 || (pixels != 'BGRA' && pixels != 0) ||
-	    IOSurfaceGetBytesPerElement(surface) != 4 || IOSurfaceGetPlaneCount(surface) != 0 ||
+	/* ios-miatoll: or 'b3a8', CoreAnimation's framebuffer here: BGRA, then an alpha plane (drawn into the first) */
+	if (target != GL_TEXTURE_2D || texture == 0 || (pixels != 'BGRA' && pixels != 0 && pixels != 'b3a8') ||
+	    IOSurfaceGetBytesPerElement(surface) != 4 || IOSurfaceGetPlaneCount(surface) != (pixels == 'b3a8' ? 2 : 0) ||
 	    (image = image_new(e, (GLuint)texture, surface)) == NULL) {
 		say("redwood-gl: -attachImage: target %#lx, texture %d, an IOSurface of '%.4s': not done\n", target, texture,
 		    (const char *)&(uint32_t){ __builtin_bswap32(pixels) });

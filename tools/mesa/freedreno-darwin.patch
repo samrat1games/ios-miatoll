@@ -262,7 +262,7 @@ Only in b2/src/gallium/frontends/osmesa: osmesa.c.orig
    soversion : host_machine.system() == 'windows' ? '' : '8',
 --- a/src/gallium/targets/osmesa/osmesa_target.c
 +++ b/src/gallium/targets/osmesa/osmesa_target.c
-@@ -26,6 +26,87 @@
+@@ -26,6 +26,88 @@
  
  #include "sw/null/null_sw_winsys.h"
  
@@ -332,7 +332,8 @@ Only in b2/src/gallium/frontends/osmesa: osmesa.c.orig
 +
 +   if (gpu_fd < 0 || redwood_drm_surface(gpu_fd, &s) != 0)
 +      return NULL;
-+   if (s.pixel_format != 0x42475241 /* 'BGRA' */ || s.planes != 0)
++   /* ios-miatoll: CoreAnimation's GL framebuffer is 'b3a8' (BGRA, then an alpha plane): its first plane is BGRA */
++   if (!(s.pixel_format == 0x42475241 /* 'BGRA' */ && s.planes == 0) && !(s.pixel_format == 0x62336138 /* 'b3a8' */ && s.planes == 2))
 +      return NULL;
 +   /* (the surface comes in as Linux's buffers come in by file descriptor: see redwood-drm) */
 +   templ.width0 = s.width;
