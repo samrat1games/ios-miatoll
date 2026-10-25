@@ -1,0 +1,20 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index f7b6638..de5001c 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -807,6 +807,15 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		sweet_surf_log_once("sel", selector);
+ 		return kIOReturnSuccess;
+ 	}
++	case 6:         /* WrapClientImage */
++	case 7:         /* WrapClientMemory */
++		/*
++		 * 0152: refused, as HackiOS's MiniIOSurface does. The silent success below handed
++		 * IOSurface.framework an all-zero answer, from which it built a surface with id 0 and no
++		 * shared page, and CoreAnimation's OpenGL ES renderer crashed on its bulk attachments.
++		 */
++		sweet_surf_log_once("sel", selector);
++		return kIOReturnUnsupported;
+ 	default:
+ 		/* Values, notifications, ownership, timestamps...: accept and ignore. */
+ 		for (uint32_t i = 0; i < args->scalarOutputCount; i++) {
