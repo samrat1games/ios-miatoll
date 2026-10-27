@@ -72,6 +72,25 @@ normal ci-boot.sh images stay unchanged. Pieces:
 5. USB Storage (mass storage of userdata) needs UFS WRITE: later, only with the user's OK.
 Test: `fastboot boot shim/out/shim-boot-menu.img` only (never flash without the user's OK).
 
+## Handoff 2026-10-27: 0153/0154 - SMMU probed the way Linux arm-smmu-qcom does it (untested)
+- Read mainline `arm-smmu-qcom.c`: `qcom_smmu500_cfg_probe()` writes the **last** S2CR with
+  `TYPE=BYPASS|CB=0xff` and reads it back, because some Qualcomm firmware rewrites a BYPASS write as FAULT; only if
+  the readback is not BYPASS ("bypass quirk") does it reserve the last context bank (CBAR type 1 + SCTLR 0) and point
+  streams at it with `TYPE=TRANS`. Our 0141 wrote `TYPE=TRANS -> bank 0` without ever testing, and it wrote before
+  0140's `sweetwlsmmu=3` dry-run gate (the gate sits later in the function), so 0141 always wrote.
+- Device DT: `apps-smmu@0x15000000` is `qcom,qsmmu-v500` with `qcom,skip-init` (boot loader config stays), icnss is
+  `iommus = <&apps_smmu 0xc0 0x01>`, `qcom,hyp_disabled`, WLAN IOVA window 0xa0000000..0xb0000000 is inside low RAM
+  (so the Android mapping is effectively 1:1 -> physical DMA is the right model for us).
+- **0153** replaces 0141's block: prints sACR/sGFSR/sGFSYNR0-1, dumps every valid SMR (`idx:id/mask>type.cb`), does
+  the Linux BYPASS readback test on S2CR70, picks `TYPE=BYPASS|0xff` (no quirk) or `TYPE=TRANS -> shared boot loader
+  bypass bank` (quirk), writes only SMR70/S2CR70 (no context bank register - banks 4-60 are not ours, 0139 panicked),
+  verifies the readback and repeats the verdict 3x2 s (the USB log replay drops chunks).
+- **0154** prints `sGFSR/sGFSYNR0/sGFSYNR1` from the copy engine wait loop whenever a fault is pending (clears it).
+- Both apply to `bsd/dev/sweet_modem.inc` (checked with `git apply` on a reconstructed region, syntax-checked with
+  clang). Next: boot 0153+0154 twice from the same build - first `EXTRA_ARGS="sweetwlce=0"` (SMMU only, cannot fault
+  on DMA), then with the copy engine. What to read: `S2CR70 BYPASS readback` (quirk or not), the `SID 0xc0 rule`
+  readback, then `HTC READY` or a `SWEET WLSMMU: fault ... synr1` line (synr1 = faulting SID).
+
 ## Handoff 2026-10-25 (later 9): SMMU banks seen (0140); 0141 shares a bypass bank
 - 0140 dump: banks 0-3 CBAR 0x1f000 (type 1) SCTLR 0xe0 (M off), used by valid streams = boot loader bypass banks;
   banks 4-60 CBAR 0 with random SCTLR (noise, not accessible to us; writing 60 panicked in 0139). Free SMR 70.

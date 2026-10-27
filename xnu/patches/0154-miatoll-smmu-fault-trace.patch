@@ -1,0 +1,18 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 9d1e015..2b7c9a4 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2703,4 +2703,13 @@ static int
+ 		gl_poll();
+ 		tftp_work();
+ 		touch_wait(10);
++		if (!(ms % 2000)) {                     /* 0154: a stream that still faults shows up here */
++			vm_offset_t s = ml_io_map(SMMU_PA, 0x1000);
++			uint32_t fsr = s ? sm_r32(s + 0x48) : 0;
++			if (fsr) {
++				printf("SWEET WLSMMU: fault sGFSR %#x synr0 %#x synr1 %#x\n", fsr, sm_r32(s + 0x50),
++				    sm_r32(s + 0x54));
++				sm_w32(s + 0x48, fsr);
++			}
++		}
+ 	}

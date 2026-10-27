@@ -1,0 +1,87 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 1fc5a63..9d1e015 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2519,25 +2519,69 @@ wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
+ 		printf("SWEET WLSMMU: banks%s\n", line);
+ 	}
+ 	/*
+-	 * 0140's dump: banks 0-3 are the boot loader's bypass banks (CBAR type 1, SCTLR 0xe0 = M off, streams point
+-	 * there); 4-60 read back noise (not ours: writing 60 panicked in 0139). Share a bypass bank: no bank writes.
++	 * 0153: follow Linux arm-smmu-qcom.c's cfg probe. Some Qualcomm firmware rewrites an S2CR write of type BYPASS
++	 * as FAULT; the probe finds out by writing the last (unused) S2CR and reading it back. Without the quirk a plain
++	 * BYPASS rule needs no context bank; with it the stream has to point at a boot loader bypass bank (0140: banks
++	 * 0-3 are CBAR type 1 with SCTLR.M 0) like the bypass emulation does. Banks 4-60 are not ours (0139 panicked),
++	 * so nothing but the two stream matching registers is written here.
+ 	 */
+-	int shared = -1;
+-	for (uint32_t i = 0; i < ncb && shared < 0; ++i) {
+-		uint32_t cbar = sm_r32(g1 + 4 * i), sctlr = sm_r32(g + cbbase + i * pg);
+-		if (used[i] && ((cbar >> 16) & 3) == 1 && !(sctlr & 1u)) {
+-			shared = (int)i;
++	printf("SWEET WLSMMU: sACR %#x sGFSR %#x synr0 %#x synr1 %#x\n", sm_r32(g + 0x10), sm_r32(g + 0x48),
++	    sm_r32(g + 0x50), sm_r32(g + 0x54));
++	{
++		char line[220];
++		uint32_t o = 0, nv = 0;
++		line[0] = 0;
++		for (uint32_t i = 0; i < nsmr; ++i) {                   /* valid SMRs: id/mask > type.cb */
++			uint32_t m = sm_r32(g + 0x800 + 4 * i);
++			if (!(m & 0x80000000u)) {
++				continue;
++			}
++			uint32_t c = sm_r32(g + 0xc00 + 4 * i);
++			++nv;
++			o += (uint32_t)snprintf(line + o, sizeof(line) - o, " %u:%x/%x>%u.%u", i, m & 0x7fffu,
++			    (m >> 16) & 0x7fffu, (c >> 16) & 3, c & 0xffu);
++			if (o > 160) {
++				printf("SWEET WLSMMU: smr%s\n", line);
++				o = 0;
++				line[0] = 0;
++			}
+ 		}
+-	}
+-	if (shared >= 0 && smr >= 0) {
+-		sm_w32(g + 0xc00 + 4 * (uint32_t)smr, (uint32_t)shared);       /* S2CR: translate via that bank */
++		if (o) {
++			printf("SWEET WLSMMU: smr%s\n", line);
++		}
++		uint32_t last = nsmr - 1;
++		sm_w32(g + 0xc00 + 4 * last, (1u << 16) | 0xffu);       /* S2CR type BYPASS, CB 0xff */
+ 		__asm__ volatile("dsb sy" : : : "memory");
++		uint32_t q = sm_r32(g + 0xc00 + 4 * last);
++		int quirk = ((q >> 16) & 3) != 1;
++		int shared = -1;
++		for (uint32_t i = 0; i < ncb && shared < 0; ++i) {
++			uint32_t cbar = sm_r32(g1 + 4 * i), sctlr = sm_r32(g + cbbase + i * pg);
++			if (used[i] && ((cbar >> 16) & 3) == 1 && !(sctlr & 1u)) {
++				shared = (int)i;
++			}
++		}
++		printf("SWEET WLSMMU: %u valid SMRs, S2CR%u BYPASS readback %#x: %s; shared bank %d\n", nv, last, q,
++		    quirk ? "firmware rewrites it (bypass quirk)" : "firmware keeps BYPASS", shared);
++		if (smr < 0 || (quirk && shared < 0)) {
++			return 0;
++		}
++		uint32_t rule = quirk ? (uint32_t)shared : ((1u << 16) | 0xffu);
++		sm_w32(g + 0xc00 + 4 * (uint32_t)smr, rule);
++		__asm__ volatile("dsb sy" : : : "memory");
+ 		sm_w32(g + 0x800 + 4 * (uint32_t)smr, 0x80000000u | (1u << 16) | 0xc0u);
+ 		__asm__ volatile("dsb sy" : : : "memory");
+ 		uint32_t rs = sm_r32(g + 0x800 + 4 * (uint32_t)smr), rc = sm_r32(g + 0xc00 + 4 * (uint32_t)smr);
+-		int okk = (rs & 0x8000ffffu) == 0x800000c0u && (rc & 0x300ffu) == (uint32_t)shared;
+-		printf("SWEET WLSMMU: SID 0xc0 -> shared bypass bank %d: SMR%d %#x S2CR %#x -> %s\n", shared, smr, rs, rc,
+-		    okk ? "physical DMA should work" : "refused");
++		int okk = (rs & 0x8000ffffu) == 0x800000c0u && ((rc >> 16) & 3) == (quirk ? 0u : 1u) &&
++		    (!quirk || (rc & 0xffu) == (uint32_t)shared);
++		printf("SWEET WLSMMU: SID 0xc0 rule: SMR%d %#x S2CR%d %#x (type %u cb %u) -> %s\n", smr, rs, smr, rc,
++		    (rc >> 16) & 3, rc & 0xffu, okk ? "physical DMA should work" : "refused");
++		for (unsigned r = 0; r < 3 && okk; ++r) {               /* the USB log replay drops chunks: repeat */
++			touch_wait(2000);
++			printf("SWEET WLSMMU: SID 0xc0 -> %s, SMR%d %#x S2CR %#x, sGFSR %#x\n",
++			    quirk ? "shared bypass bank" : "S2CR bypass", smr, sm_r32(g + 0x800 + 4 * (uint32_t)smr),
++			    sm_r32(g + 0xc00 + 4 * (uint32_t)smr), sm_r32(g + 0x48));
++		}
+ 		return okk;
+ 	}
+ 	for (int i = (int)ncb - 1; i >= 0 && cb < 0; --i) {
