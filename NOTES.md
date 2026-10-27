@@ -765,3 +765,21 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   function and the verdict repeated 15x with `ok N`. If `bypass enter` is missing, the call is not
   reached at all (look at the caller / ml_io_map); if it is there, the writes or the readback fail.
 - Next: boot with `sweetwlsmmu=3` (dry run, no writes) to see which line the block stops at.
+
+## Handoff 2026-10-27 (0156): the GPU wall is the first buffer
+- GPU boot (`gpu=1 adreno_pause=0 sweetmodem=0`) reaches the 3D core (steps 20/21, "THE 3D CORE TAKES
+  COMMANDS") and **CoreAnimation takes our GL library**:
+  `adreno: backboardd gets /private/var/miatoll/libredwood-gl.dylib: CoreAnimation draws with the GPU`.
+- RedwoodGPU then gets a client and 7 requests: `0x40` x5 (get param), `0x4a` (submit queue new),
+  `0x42` (gem new, 16 KB). After `0x42` the **machine is dead**: no more log lines, no ARP/ping,
+  only the USB gadget stays enumerated. So the hang is inside `gemNew`/`newBuffer`, not in the GL
+  side of userland.
+- 0156 traces that path: `newBuffer ... enter/address/page/phys/mapped` and `gemNew ... allocating/
+  memory`, each with `gpu_trace_ms` (300 ms) so the USB log gets the line out before a hang.
+- Next boot: `gpu=1 adreno_pause=0 sweetmodem=0 sweetsample=- sweetiolog=- sweetnull=-` and read the
+  last line. "allocating" without "memory" -> `IOBufferMemoryDescriptor::inTaskWithOptions` hangs
+  (VM/page-list problem); "memory" then "address" -> `redwood_gpu_address()`; then per page ->
+  `getPhysicalSegment` or `redwood_gpu_map` (SMMU page tables for the core's own space).
+- If it is inTaskWithOptions: try `kIODirectionInOut | kIOMemoryKernelUserShared` without
+  `kIOMapWriteCombineCache`, or an `IOMallocContiguous`/`IOMemoryDescriptor::withAddressRange` buffer,
+  to see which part of the VM the port cannot do.
