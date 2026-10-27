@@ -1,0 +1,47 @@
+diff --git a/bsd/dev/miatoll_adreno.c b/bsd/dev/miatoll_adreno.c
+index bad44a2..40800f0 100644
+--- a/bsd/dev/miatoll_adreno.c
++++ b/bsd/dev/miatoll_adreno.c
+@@ -5011,7 +5011,11 @@ redwood_adreno_init(void)
+ 		display_probe();
+ 	}
+ 	if (!PE_parse_boot_argn("adreno", &last_step, sizeof(last_step))) {
+-		if (!(PE_parse_boot_argn("gpu", &only, sizeof(only)) && only) || !start_by_itself()) {
++		/* 0160: the GPU starts by itself on every boot; gpu=0 (or adreno=0) leaves it alone */
++		if (PE_parse_boot_argn("gpu", &only, sizeof(only)) && !only) {
++			return;
++		}
++		if (!start_by_itself()) {
+ 			return;
+ 		}
+ 		by_itself = true;
+@@ -5215,13 +5219,26 @@ void miatoll_adreno_start(void);
+ void
+ miatoll_adreno_start(void)
+ {
+-	uint32_t value = 0;
++	uint32_t value = 1;
+ 	thread_t thread;
+ 
+-	if (!PE_parse_boot_argn("adreno", &value, sizeof(value)) &&
+-	    !(PE_parse_boot_argn("gpu", &value, sizeof(value)) && value)) {
++	/* 0160: on by default; gpu=0 / adreno=0 turns it off */
++	if ((PE_parse_boot_argn("adreno", &value, sizeof(value)) && !value) ||
++	    (PE_parse_boot_argn("gpu", &value, sizeof(value)) && !value)) {
+ 		return;
+ 	}
++	/*
++	 * 0160: TrustZone serves one client at a time: the cellular modem's PIL start and the GPU's zap shader both go
++	 * through it, and a boot with both leaves the GPU dead. When the modem is asked for, the GPU stays off.
++	 */
++	{
++		uint32_t modem = 0;
++		if (PE_parse_boot_argn("sweetmodem", &modem, sizeof(modem)) && modem) {
++			printf("adreno: the modem is on this boot (sweetmodem=%u): the GPU stays off, TrustZone takes one "
++			    "client at a time\n", modem);
++			return;
++		}
++	}
+ 	adreno_starting = 1;
+ 	if (kernel_thread_start(miatoll_adreno_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
