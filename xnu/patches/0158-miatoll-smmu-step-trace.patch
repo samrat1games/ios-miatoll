@@ -1,0 +1,46 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 4c8f2a1..7d21b93 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -7,11 +7,21 @@
+ 	 * 0-3 are CBAR type 1 with SCTLR.M 0) like the bypass emulation does. Banks 4-60 are not ours (0139 panicked),
+ 	 * so nothing but the two stream matching registers is written here.
+ 	 */
+-	printf("SWEET WLSMMU: sACR %#x sGFSR %#x synr0 %#x synr1 %#x\n", sm_r32(g + 0x10), sm_r32(g + 0x48),
+-	    sm_r32(g + 0x50), sm_r32(g + 0x54));
++	/* 0158: one register a line with a pause: the WLAN thread stops in here and the rest of the machine stays up */
++	printf("SWEET WLSMMU: reading sACR 0x10\n");
++	touch_wait(300);
++	printf("SWEET WLSMMU: sACR %#x\n", sm_r32(g + 0x10));
++	touch_wait(300);
++	printf("SWEET WLSMMU: sGFSR %#x\n", sm_r32(g + 0x48));
++	touch_wait(300);
++	printf("SWEET WLSMMU: synr0 %#x synr1 %#x\n", sm_r32(g + 0x50), sm_r32(g + 0x54));
++	touch_wait(300);
+ 	{
+ 		char line[220];
+ 		uint32_t o = 0, nv = 0;
++
++		printf("SWEET WLSMMU: reading %u SMRs\n", nsmr);
++		touch_wait(300);
+ 		line[0] = 0;
+ 		for (uint32_t i = 0; i < nsmr; ++i) {                   /* valid SMRs: id/mask > type.cb */
+ 			uint32_t m = sm_r32(g + 0x800 + 4 * i);
+@@ -31,6 +41,8 @@
+ 		if (o) {
+ 			printf("SWEET WLSMMU: smr%s\n", line);
+ 		}
++		printf("SWEET WLSMMU: %u valid SMRs, writing S2CR%u BYPASS\n", nv, nsmr - 1);
++		touch_wait(300);
+ 		uint32_t last = nsmr - 1;
+ 		sm_w32(g + 0xc00 + 4 * last, (1u << 16) | 0xffu);       /* S2CR type BYPASS, CB 0xff */
+ 		__asm__ volatile("dsb sy" : : : "memory");
+@@ -49,6 +61,8 @@
+ 			return 0;
+ 		}
+ 		uint32_t rule = quirk ? (uint32_t)shared : ((1u << 16) | 0xffu);
++		printf("SWEET WLSMMU: writing S2CR%d %#x and SMR%d\n", smr, rule, smr);
++		touch_wait(300);
+ 		sm_w32(g + 0xc00 + 4 * (uint32_t)smr, rule);
+ 		__asm__ volatile("dsb sy" : : : "memory");
+ 		sm_w32(g + 0x800 + 4 * (uint32_t)smr, 0x80000000u | (1u << 16) | 0xc0u);
