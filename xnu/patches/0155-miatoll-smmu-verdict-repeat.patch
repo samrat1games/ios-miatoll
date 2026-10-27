@@ -1,0 +1,27 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 9d1e015..4c8f2a1 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2477,4 +2477,5 @@ wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
+ 	if (on == 2) {
+ 		return 0;
+ 	}
++	printf("SWEET WLSMMU: bypass enter, on %u\n", on);
+ 	uint32_t nsmr = idr0 & 0xff, ncb = idr1 & 0xff;
+@@ -2575,11 +2576,11 @@ wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
+ 		    (!quirk || (rc & 0xffu) == (uint32_t)shared);
+ 		printf("SWEET WLSMMU: SID 0xc0 rule: SMR%d %#x S2CR%d %#x (type %u cb %u) -> %s\n", smr, rs, smr, rc,
+ 		    (rc >> 16) & 3, rc & 0xffu, okk ? "physical DMA should work" : "refused");
+-		for (unsigned r = 0; r < 3 && okk; ++r) {               /* the USB log replay drops chunks: repeat */
+-			touch_wait(2000);
+-			printf("SWEET WLSMMU: SID 0xc0 -> %s, SMR%d %#x S2CR %#x, sGFSR %#x\n",
+-			    quirk ? "shared bypass bank" : "S2CR bypass", smr, sm_r32(g + 0x800 + 4 * (uint32_t)smr),
+-			    sm_r32(g + 0xc00 + 4 * (uint32_t)smr), sm_r32(g + 0x48));
++		for (unsigned r = 0; r < 15; ++r) {                     /* the USB log drops bursts: repeat the verdict */
++			printf("SWEET WLSMMU: SID 0xc0 -> %s (ok %d), SMR%d %#x S2CR %#x, sGFSR %#x\n",
++			    quirk ? "shared bypass bank" : "S2CR bypass", okk, smr,
++			    sm_r32(g + 0x800 + 4 * (uint32_t)smr), sm_r32(g + 0xc00 + 4 * (uint32_t)smr), sm_r32(g + 0x48));
++			touch_wait(3000);
+ 		}
+ 		return okk;
+ 	}

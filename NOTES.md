@@ -755,3 +755,13 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
      cpu_init, before arm_vm_init.
   5. panic hook at top of panic_trap_to_debugger: va_copy + _doprnt(fmt, &copy, sweet_early_putc, 16).
   Verify with tools/xnu-cc.py (compile+symbols) and patch-order simulation before the single CI run.
+
+## Handoff 2026-10-27 (0155): SMMU verdict still invisible
+- 0153/0154 booted 3x; the phone stays alive, `sCR0 0x210406 IDR0 0x4c017e47` and
+  `physical DMA would fault (needs an SMMU context bank)` arrive, but everything after that in
+  `wlan_smmu_bypass` (`sACR`, SMR dump, `SID 0xc0 rule`) never reaches the USB log, even with
+  `sweetsample=- sweetiolog=- sweetnull=-` (so it is not the sampler burst).
+- 0155 makes it one short line per 3 s: `SWEET WLSMMU: bypass enter, on N` at the top of the
+  function and the verdict repeated 15x with `ok N`. If `bypass enter` is missing, the call is not
+  reached at all (look at the caller / ml_io_map); if it is there, the writes or the readback fail.
+- Next: boot with `sweetwlsmmu=3` (dry run, no writes) to see which line the block stops at.
