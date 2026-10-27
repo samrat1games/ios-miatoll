@@ -1,0 +1,56 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index d2d6ec9..3d42405 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2491,18 +2491,29 @@ wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
+ 	uint32_t pg = (idr1 & 0x80000000u) ? 0x10000u : 0x1000u;
+ 	uint32_t npage = 1u << (((idr1 >> 28) & 7) + 1);
+ 	uint32_t cbbase = npage * pg;
++	/* 0159: the thread stops somewhere between "bypass enter" and the sACR print; a print before each step says where */
++	printf("SWEET WLSMMU: mapping %#x bytes at %#llx\n", cbbase + ncb * pg, SMMU_PA);
++	touch_wait(300);
+ 	vm_offset_t g = ml_io_map(SMMU_PA, cbbase + ncb * pg);
++	printf("SWEET WLSMMU: mapped at %p\n", (void *)g);
++	touch_wait(300);
+ 	if (!g || !nsmr || !ncb) {
+ 		return 0;
+ 	}
+ 	vm_offset_t g1 = g + pg;
+ 	int smr = -1, cb = -1;
++	printf("SWEET WLSMMU: free SMR scan of %u\n", nsmr);
++	touch_wait(300);
+ 	for (int i = (int)nsmr - 1; i >= 0 && smr < 0; --i) {
+ 		if (!(sm_r32(g + 0x800 + 4 * (uint32_t)i) & 0x80000000u)) {
+ 			smr = i;
+ 		}
+ 	}
++	printf("SWEET WLSMMU: free SMR %d\n", smr);
++	touch_wait(300);
+ 	/* banks in use = the targets of valid stream matches with S2CR type translate (Linux keeps its own map) */
++	printf("SWEET WLSMMU: used-bank scan of %u SMRs\n", nsmr);
++	touch_wait(300);
+ 	static uint8_t used[256];
+ 	for (uint32_t i = 0; i < nsmr && i < 128; ++i) {
+ 		uint32_t m = sm_r32(g + 0x800 + 4 * i), c = sm_r32(g + 0xc00 + 4 * i);
+@@ -2510,15 +2521,21 @@ wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
+ 			used[c & 0xff] = 1;
+ 		}
+ 	}
++	printf("SWEET WLSMMU: bank scan of %u banks\n", ncb);
++	touch_wait(300);
+ 	for (uint32_t i = 0; i < ncb; i += 8) {
+ 		char line[200];
+ 		uint32_t o = 0;
++		printf("SWEET WLSMMU: bank chunk %u\n", i);
+ 		for (uint32_t k = i; k < i + 8 && k < ncb && o + 24 < sizeof(line); ++k) {
+ 			o += (uint32_t)snprintf(line + o, sizeof(line) - o, " %u:%x/%x%s", k, sm_r32(g1 + 4 * k),
+ 			    sm_r32(g + cbbase + k * pg), used[k] ? "*" : "");
+ 		}
+ 		printf("SWEET WLSMMU: banks%s\n", line);
++		touch_wait(300);
+ 	}
++	printf("SWEET WLSMMU: bank scan done\n");
++	touch_wait(300);
+ 	/*
+ 	 * 0153: follow Linux arm-smmu-qcom.c's cfg probe. Some Qualcomm firmware rewrites an S2CR write of type BYPASS
+ 	 * as FAULT; the probe finds out by writing the last (unused) S2CR and reading it back. Without the quirk a plain
