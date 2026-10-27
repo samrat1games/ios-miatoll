@@ -72,6 +72,11 @@ normal ci-boot.sh images stay unchanged. Pieces:
 5. USB Storage (mass storage of userdata) needs UFS WRITE: later, only with the user's OK.
 Test: `fastboot boot shim/out/shim-boot-menu.img` only (never flash without the user's OK).
 
+## Handoff 2026-10-27 (later 2): TWO more panics; fixes in flight
+- **Flaky early panic** (fix2 boot, gpu=1): `physctokv_range: illegal PA: 0x10d30000; phys base 0x100000000, size 0x80000000 @arm_vm_init.c:406`, cpu 6, during kminit (screen shows skywalk self-tests + "Serial keyboard started", these EARLY lines do NOT reach the 0047 console ring - the ring starts at "Darwin Kernel Version"). Panic caller 0xfffffe0007b35eb0 = `_arm_vm_init.cold.16` (bl at 0x7b35eac). PA 0x10d30000 is NOT in any of our patches/shim; the physctokv caller is stock code. NOT deterministic: retrying the same shim-boot-fix2.img booted clean (ECM up ~30 s). Treat as an early-boot race; if it resurfaces, find the DT node owning 0x10d30000 in shim/out/miatoll.adt.
+- **0160 default-on GPU silently did nothing** (fix1 boot, no gpu arg, sweetmodem=0): ZERO adreno lines, not even "adreno: firmware directory ... after N s" from miatoll_adreno_thread -> miatoll_adreno_start() returned before kernel_thread_start despite 0160's logic (parse of absent adreno/gpu args should fall through). Either the built 0160 kernel differs from the patch intent or another early return fired; 0161 should add a decision print at the top of miatoll_adreno_start. Workaround: pass gpu=1 explicitly (shim-boot-fix2.img, gpu=1 adreno_pause=0 sweetmodem=0).
+- GPU firmware lives in /private/var/miatoll/ on the root (image_file(), 0142); if a root reflash wiped it, gpu=1 prints "THE GPU IS NOT STARTED: ... no fw/<name>"; push files from fw-gpu/ with tools/sweet-put.py (needs the sudo usbnet bridge).
+
 ## Handoff 2026-10-27 (later): 0160 boot PANICKED - kernel map exhausted (kmem_alloc failed, KERN_NO_SPACE)
 - Photo (panic screen): `panic(cpu 5 caller 0xfffffe0007b2....): kmem_...(<map>, 0x100021, 0x...): failed with 3 @vm_kern.c:170`,
   then `Original panic string:` (repeat), `Handshake structure not initialized` (that string is NOT in our repo and not in
