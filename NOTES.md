@@ -783,3 +783,14 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - If it is inTaskWithOptions: try `kIODirectionInOut | kIOMemoryKernelUserShared` without
   `kIOMapWriteCombineCache`, or an `IOMallocContiguous`/`IOMemoryDescriptor::withAddressRange` buffer,
   to see which part of the VM the port cannot do.
+
+## 2026-10-27: the GPU draws (gpu_cached=1)
+- The panic at the first gemNew was `phys_to_kv_range: illegal PA: 0xdb98000` (caller
+  `_ml_static_vtop.cold.1`): a buffer made with `kIOMapWriteCombineCache` has no physical addresses
+  this kernel can name, so `getPhysicalSegment` panics. With `gpu_cached=1` (no WC mapping, a cache
+  flush before each submission) **the whole path works**:
+  `adreno: summary: last step done 21, failed 0, the GPU STAYS ON, service RedwoodGPU REGISTERED`,
+  `adreno: backboardd gets /private/var/miatoll/libredwood-gl.dylib: CoreAnimation draws with the GPU`,
+  gemNew (0x42) -> gemInfo (0x43) -> submit (0x46) and then steady work:
+  `RedwoodGPU: 390 submissions in 5316 ms: 1888 command buffers and 20281 buffers named ...`.
+- 0157 makes that the default (gpu_cached=0 asks for write-combined again).

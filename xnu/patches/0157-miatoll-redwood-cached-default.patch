@@ -1,0 +1,20 @@
+diff --git a/iokit/Kernel/arm/RedwoodGPU.cpp b/iokit/Kernel/arm/RedwoodGPU.cpp
+index 9a1c4e7..3d0c5b2 100644
+--- a/iokit/Kernel/arm/RedwoodGPU.cpp
++++ b/iokit/Kernel/arm/RedwoodGPU.cpp
+@@ -356,7 +356,14 @@
+ 	RedwoodGPU * gpu;
+ 	uint32_t cached = 0;
+ 
+-	gGPUCached = PE_parse_boot_argn("gpu_cached", &cached, sizeof(cached)) && cached != 0;
++	/*
++	 * 0157: memory the processor's cache is in between by default. A buffer made with
++	 * kIOMapWriteCombineCache has no physical addresses this kernel can name: gemNew ->
++	 * newBuffer -> getPhysicalSegment -> ml_static_vtop -> "phys_to_kv_range: illegal PA"
++	 * and a panic. Cached memory with a flush before every submission costs little.
++	 * (gpu_cached=0: write-combined again, for whoever makes that path work.)
++	 */
++	gGPUCached = !PE_parse_boot_argn("gpu_cached", &cached, sizeof(cached)) || cached != 0;
+ 	gGPULock = IOLockAlloc();
+ 	gpu = OSTypeAlloc(RedwoodGPU);
+ 	if (gpu == NULL || provider == NULL || !gpu->init() || !gpu->attach(provider)) {
