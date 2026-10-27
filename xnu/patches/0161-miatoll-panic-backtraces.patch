@@ -1,0 +1,108 @@
+diff --git a/bsd/dev/miatoll_adreno.c b/bsd/dev/miatoll_adreno.c
+index 40800f0..6bacc4a 100644
+--- a/bsd/dev/miatoll_adreno.c
++++ b/bsd/dev/miatoll_adreno.c
+@@ -5220,11 +5220,22 @@ void
+ miatoll_adreno_start(void)
+ {
+ 	uint32_t value = 1;
++	uint32_t dbg_adreno = 0, dbg_gpu = 0, dbg_modem = 0;
++	int dbg_have_adreno, dbg_have_gpu;
+ 	thread_t thread;
+ 
++	/* 0161: the on-by-default path once fell through with no prints; log the parsed decision */
++	dbg_have_adreno = PE_parse_boot_argn("adreno", &dbg_adreno, sizeof(dbg_adreno));
++	dbg_have_gpu = PE_parse_boot_argn("gpu", &dbg_gpu, sizeof(dbg_gpu));
++	(void)PE_parse_boot_argn("sweetmodem", &dbg_modem, sizeof(dbg_modem));
++	printf("adreno: start decision: adreno arg %s=%u, gpu arg %s=%u, sweetmodem=%u\n",
++	    dbg_have_adreno ? "set" : "unset(default on)", dbg_adreno,
++	    dbg_have_gpu ? "set" : "unset(default on)", dbg_gpu, dbg_modem);
++
+ 	/* 0160: on by default; gpu=0 / adreno=0 turns it off */
+ 	if ((PE_parse_boot_argn("adreno", &value, sizeof(value)) && !value) ||
+ 	    (PE_parse_boot_argn("gpu", &value, sizeof(value)) && !value)) {
++		printf("adreno: start decision: adreno=0/gpu=0 requested, the GPU stays off\n");
+ 		return;
+ 	}
+ 	/*
+@@ -5240,6 +5251,7 @@ miatoll_adreno_start(void)
+ 		}
+ 	}
+ 	adreno_starting = 1;
++	printf("adreno: start decision: starting the GPU thread\n");
+ 	if (kernel_thread_start(miatoll_adreno_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	} else {
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index 2cd1bf0..f6b3ce5 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -32,6 +32,7 @@
+ #include <kern/assert.h>
+ #include <kern/misc_protos.h>
+ #include <kern/monotonic.h>
++#include <kern/backtrace.h>
+ #include <mach/vm_types.h>
+ #include <mach/vm_param.h>
+ #include <vm/vm_kern.h>
+@@ -401,6 +402,20 @@ phystokv_range(pmap_paddr_t pa, vm_size_t *max_len)
+ 		*max_len = len;
+ 	}
+ 	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
++		/*
++		 * 0161: flaky "illegal PA" panics race with GPU/adreno boots; dump the caller chain
++		 * (ml_static_vtop / phystokv_range both land here) so the bad PA's origin is known.
++		 */
++		{
++			uintptr_t bt[16] = { 0 };
++			struct backtrace_control ctl = { .btc_frame_addr = (uintptr_t)__builtin_frame_address(0) };
++			int bt_count = backtrace(bt, sizeof(bt) / sizeof(bt[0]), &ctl, NULL);
++			printf("phystokv_range: illegal PA 0x%llx -- backtrace (%d frames):\n",
++			    (unsigned long long)pa, bt_count);
++			for (int i = 0; i < bt_count; i++) {
++				printf("phystokv_bt[%d]: 0x%016lx\n", i, (unsigned long)bt[i]);
++			}
++		}
+ 		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx", __func__,
+ 		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size);
+ 	}
+@@ -416,6 +431,16 @@ ml_static_vtop(vm_offset_t va)
+ 		}
+ 	}
+ 	if (__improbable((va < gVirtBase) || (((vm_address_t)(va) - gVirtBase) >= gPhysSize))) {
++		{
++			uintptr_t bt[16] = { 0 };
++			struct backtrace_control ctl = { .btc_frame_addr = (uintptr_t)__builtin_frame_address(0) };
++			int bt_count = backtrace(bt, sizeof(bt) / sizeof(bt[0]), &ctl, NULL);
++			printf("ml_static_vtop: illegal VA 0x%lx -- backtrace (%d frames):\n",
++			    (unsigned long)va, bt_count);
++			for (int i = 0; i < bt_count; i++) {
++				printf("mlstaticvtop_bt[%d]: 0x%016lx\n", i, (unsigned long)bt[i]);
++			}
++		}
+ 		panic("%s: illegal VA: %p; virt base 0x%llx, size 0x%llx", __func__,
+ 		    (void*)va, (unsigned long long)gVirtBase, (unsigned long long)gPhysSize);
+ 	}
+diff --git a/osfmk/vm/vm_kern.c b/osfmk/vm/vm_kern.c
+index 54edb01..a85672c 100644
+--- a/osfmk/vm/vm_kern.c
++++ b/osfmk/vm/vm_kern.c
+@@ -174,6 +174,18 @@ __kmem_failed_panic(
+ 	kern_return_t   kr,
+ 	const char     *what)
+ {
++	/*
++	 * 0161: the map fills up only with sweetmodem=1 near the modem PIL start; dump a backtrace
++	 * so the allocating caller is identified on the panic screen instead of guessed from xrefs.
++	 */
++	uintptr_t bt[16] = { 0 };
++	struct backtrace_control ctl = { .btc_frame_addr = (uintptr_t)__builtin_frame_address(0) };
++	int bt_count = backtrace(bt, sizeof(bt) / sizeof(bt[0]), &ctl, NULL);
++	printf("kmem_%s(%p, %zd, 0x%x): failed with %d -- backtrace (%d frames):\n",
++	    what, map, (size_t)size, flags, kr, bt_count);
++	for (int i = 0; i < bt_count; i++) {
++		printf("kmem_bt[%d]: 0x%016lx\n", i, (unsigned long)bt[i]);
++	}
+ 	panic("kmem_%s(%p, %zd, 0x%x): failed with %d",
+ 	    what, map, (size_t)size, flags, kr);
+ }
