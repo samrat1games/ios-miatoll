@@ -1,0 +1,65 @@
+diff --git a/iokit/Kernel/arm/RedwoodGPU.cpp b/iokit/Kernel/arm/RedwoodGPU.cpp
+index dc2c58f..9a1c4e7 100644
+--- a/iokit/Kernel/arm/RedwoodGPU.cpp
++++ b/iokit/Kernel/arm/RedwoodGPU.cpp
+@@ -638,6 +638,10 @@
+ 	struct gpu_buffer * b = NULL;
+ 	bool mapped = true;
+ 
++	IOLog("RedwoodGPU: newBuffer %llu from %llu: enter\n", size, from);
++	if (gTraceSlow) {
++		IOSleep(gTraceSlow);
++	}
+ 	for (uint32_t n = 0; n < GPU_BUFFERS; n++) {
+ 		uint32_t i = (fNextBuffer + n) % GPU_BUFFERS;
+ 
+@@ -652,13 +656,27 @@
+ 		IOLog("RedwoodGPU: no %s left for a buffer of %llu bytes\n", b ? "addresses" : "handles", size);
+ 		return NULL;
+ 	}
++	IOLog("RedwoodGPU: newBuffer %llu: address %#llx\n", size, b->address);
++	if (gTraceSlow) {
++		IOSleep(gTraceSlow);
++	}
+ 	for (uint64_t offset = 0; offset < size && mapped; offset += 4096) {
+ 		IOByteCount length = 0;
+ 		addr64_t phys = memory->getPhysicalSegment(from + offset, &length, kIOMemoryMapperNone);
+ 
++		if (size <= 65536) {                    /* 0156: a small buffer page by page, the log gets each line out */
++			IOLog("RedwoodGPU: newBuffer %llu: page %llu phys %#llx\n", size, offset, phys);
++			if (gTraceSlow) {
++				IOSleep(gTraceSlow);
++			}
++		}
+ 		mapped = phys != 0 && redwood_gpu_map(b->address + offset, phys, flags & MSM_BO_GPU_READONLY);
+ 	}
+ 	redwood_gpu_mapped();
++	IOLog("RedwoodGPU: newBuffer %llu: mapped %d\n", size, (int) mapped);
++	if (gTraceSlow) {
++		IOSleep(gTraceSlow);
++	}
+ 	if (!mapped) {
+ 		redwood_gpu_unmap(b->address, size);
+ 		redwood_gpu_address_free(b->address, size);
+@@ -782,6 +800,10 @@
+ 		}
+ 	}
+ 	IOLockUnlock(gGPULock);
++	IOLog("RedwoodGPU: gemNew %llu: allocating\n", size);    /* 0156: the first buffer of a run stops here */
++	if (gTraceSlow) {
++		IOSleep(gTraceSlow);
++	}
+ 	/* (the memory comes zeroed, and making it write-combined pushes the zeroes out of the cache) */
+ 	memory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIODirectionInOut | kIOMemoryKernelUserShared |
+ 	    (gGPUCached ? 0 : kIOMapWriteCombineCache), (vm_size_t) size, PAGE_SIZE);
+@@ -790,6 +812,10 @@
+ 		    fBufferBytes >> 20);
+ 		return kIOReturnNoMemory;
+ 	}
++	IOLog("RedwoodGPU: gemNew %llu: memory %p\n", size, memory->getBytesNoCopy());
++	if (gTraceSlow) {
++		IOSleep(gTraceSlow);
++	}
+ 	if (gGPUCached) {
+ 		redwood_gpu_to_memory(memory->getBytesNoCopy(), size);
+ 	}
