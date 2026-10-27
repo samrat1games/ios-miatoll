@@ -72,6 +72,28 @@ normal ci-boot.sh images stay unchanged. Pieces:
 5. USB Storage (mass storage of userdata) needs UFS WRITE: later, only with the user's OK.
 Test: `fastboot boot shim/out/shim-boot-menu.img` only (never flash without the user's OK).
 
+## Handoff 2026-10-27 (later): 0160 boot PANICKED - kernel map exhausted (kmem_alloc failed, KERN_NO_SPACE)
+- Photo (panic screen): `panic(cpu 5 caller 0xfffffe0007b2....): kmem_...(<map>, 0x100021, 0x...): failed with 3 @vm_kern.c:170`,
+  then `Original panic string:` (repeat), `Handshake structure not initialized` (that string is NOT in our repo and not in
+  the patches - probably from the stock panic-display path; not the cause). Phone landed in ABL fastboot; **partitions are
+  untouched** (all tests are `fastboot boot`), `fastboot reboot` boots Android.
+- Symbolized against `xnu/out/kernel.development.sweet` (0160 build, Oct 27 14:43): the format string
+  `kmem_%s(%p, %zd, 0x%x): failed with %d @%s:%d` (file 0x924e0) is used only by `___kmem_failed_panic` (TEXT_EXEC
+  0xfffffe0007b20480, an outlined cold helper). So the panic means: a ~1 MiB (0x100021) allocation from the kernel map
+  failed with KERN_NO_SPACE - the kernel map ran out, i.e. a leak or a genuinely too-small map, ~20 min into a full iOS
+  session with the GPU on (0160 made `gpu=1` the default). `vm_object_reference.cold.2` at 0x7b26dac is an unrelated
+  Assert (`object->ref_count > 0`, vm_object.c:6106) - a photo digit may be misread; the panic MESSAGE is authoritative.
+- Bounded suspects audited so far: RedwoodGPU gemNew/freeBuffer/dropKept are handle-capped (GPU_BUFFERS 8192,
+  GPU_KEPT 48/160 MB) and release IOBufferMemoryDescriptor on free. 0x100021 is NOT page-rounded, so it is probably not
+  a gemNew buffer (round_page'd) - look at IOSurface/SweetSurface churn (`SWEET SURF: SpringBoard create ...` in
+  logs/bridge.log), QRTR/mbuf traffic, and the USB live-log path (0076/0077) as leak candidates.
+- Next, no rebuild needed: boot the SAME 0160 kernel with `gpu=0` (EXTRA_ARGS in tools/ci-boot.sh) and leave it up.
+  Panic again -> not the GPU. Stays up -> GPU path leaks.
+- Then 0161 (patch idea): a periodic `SWEET KMAP:` line (vm_map kernel_map size/max_size, vm_page wire/active counts,
+  printed from an existing periodic spot like the battery presenter) every ~30 s, so the USB log shows the drain rate
+  live. NOTE: logs/bridge.log ends BEFORE the panic (last line 14:57, WLFW indication 0x2c); the panic text never
+  reaches the USB log, only the screen.
+
 ## Handoff 2026-10-27: 0153/0154 - SMMU probed the way Linux arm-smmu-qcom does it (untested)
 - Read mainline `arm-smmu-qcom.c`: `qcom_smmu500_cfg_probe()` writes the **last** S2CR with
   `TYPE=BYPASS|CB=0xff` and reads it back, because some Qualcomm firmware rewrites a BYPASS write as FAULT; only if
