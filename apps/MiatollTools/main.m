@@ -43,6 +43,18 @@ static uint64_t SysctlU64(const char *name) { uint64_t v = 0; size_t n = sizeof(
 - (void)refresh { self.tv.text = @"..."; dispatch_async(dispatch_get_global_queue(0, 0), ^{ NSString *s = self.producer(); dispatch_async(dispatch_get_main_queue(), ^{ self.tv.text = s; }); }); }
 @end
 
+// Wi-Fi networks: the kernel's WLAN scan writes one "SSID<TAB>signal dBm<TAB>channel" line per network here.
+static NSString *WifiText(void) {
+	NSString *t = [NSString stringWithContentsOfFile:@"/private/var/miatoll/networks.txt" encoding:NSUTF8StringEncoding error:nil];
+	NSMutableString *s = [NSMutableString stringWithString:@"Wi-Fi сети (модем WCN3990):\n\n"];
+	if (!t.length) { [s appendString:@"Сканирование ещё не вернуло сетей.\nЕсли ядро запущено с sweetmodem=1, нажмите обновить через минуту после загрузки.\n"]; }
+	else for (NSString *l in [t componentsSeparatedByString:@"\n"]) {
+		NSArray *f = [l componentsSeparatedByString:@"\t"]; if (f.count < 2) continue;
+		[s appendFormat:@"%@\n   сигнал %@ дБм%@\n", f[0], f[1], f.count > 2 ? [NSString stringWithFormat:@", канал %@", f[2]] : @""];
+	}
+	return s;
+}
+
 static NSString *InfoText(void) {
 	NSMutableString *s = [NSMutableString string];
 	UIDevice *d = UIDevice.currentDevice;
@@ -247,7 +259,7 @@ static BOOL Unzip(NSString *zip, NSString *dest, NSString **err) {
 
 @interface MenuVC : UITableViewController @property (nonatomic, strong) NSArray *items; @end
 @implementation MenuVC
-- (void)viewDidLoad { [super viewDidLoad]; self.title = @"MiatollTools"; self.items = @[@"Система и устройство", @"Тест экрана (цвета)", @"Тест тача (мультитач)", @"Сеть (DNS/HTTP)", @"Реестр железа (IOKit)", @"Установка IPA по ссылке", @"Зарегистрировать приложения из /Applications", @"Яркость"]; }
+- (void)viewDidLoad { [super viewDidLoad]; self.title = @"MiatollTools"; self.items = @[@"Система и устройство", @"Тест экрана (цвета)", @"Тест тача (мультитач)", @"Сеть (DNS/HTTP)", @"Wi-Fi сети", @"Реестр железа (IOKit)", @"Установка IPA по ссылке", @"Зарегистрировать приложения из /Applications", @"Яркость"]; }
 - (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s { return self.items.count; }
 - (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip { UITableViewCell *c = [t dequeueReusableCellWithIdentifier:@"c"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"c"]; c.textLabel.text = self.items[ip.row]; c.accessoryType = UITableViewCellAccessoryDisclosureIndicator; return c; }
 - (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
@@ -257,10 +269,11 @@ static BOOL Unzip(NSString *zip, NSString *dest, NSString **err) {
 		case 1: vc = [ColorVC new]; break;
 		case 2: vc = [TouchVC new]; break;
 		case 3: { TextVC *v = [TextVC new]; v.producer = ^{ return NetText(); }; vc = v; break; }
-		case 4: { TextVC *v = [TextVC new]; v.producer = ^{ return RegistryText(); }; vc = v; break; }
-		case 5: vc = [InstallVC new]; break;
-		case 6: { TextVC *v = [TextVC new]; v.producer = ^{ return RegisterAll(); }; vc = v; break; }
-		case 7: vc = [BrightVC new]; break;
+		case 4: { TextVC *v = [TextVC new]; v.producer = ^{ return WifiText(); }; vc = v; break; }
+		case 5: { TextVC *v = [TextVC new]; v.producer = ^{ return RegistryText(); }; vc = v; break; }
+		case 6: vc = [InstallVC new]; break;
+		case 7: { TextVC *v = [TextVC new]; v.producer = ^{ return RegisterAll(); }; vc = v; break; }
+		case 8: vc = [BrightVC new]; break;
 	}
 	vc.title = title; [self.navigationController pushViewController:vc animated:YES];
 }

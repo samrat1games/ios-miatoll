@@ -6,7 +6,8 @@ set -e
 cd "$(dirname "$0")/.."
 # the run of the current commit (the newest run may still be an older one right after a push)
 head=$(git rev-parse HEAD)
-for i in $(seq 1 60); do
+rid=${WL_RID:-}
+for i in $(seq 1 60); do [ -n "$rid" ] && break
 	rid=$(gh run list --workflow xnu.yml --commit "$head" -L 1 --json databaseId -q '.[0].databaseId' 2>/dev/null)
 	[ -n "$rid" ] && break
 	sleep 10
@@ -16,7 +17,7 @@ echo "xnu run $rid"
 sed -e 's/sweetmodem=0/sweetmodem=1/' -e "s/^rid=.*/rid=$rid/" tools/ci-boot.sh > tools/.wl-boot.sh
 rm -rf /tmp/kdl
 rm -f shim/out/shim-boot-wl.img
-bash tools/.wl-boot.sh wl >/dev/null; [ -s shim/out/shim-boot-wl.img ] && [ -s /tmp/kdl/kernel.development.sweet ] || { rm -f tools/.wl-boot.sh; echo "build of the boot image failed"; exit 1; }
+EXTRA_ARGS="${EXTRA_ARGS:-gpu=1 gpu_with_modem=1 adreno_pause=0}" bash tools/.wl-boot.sh wl >/dev/null; [ -s shim/out/shim-boot-wl.img ] && [ -s /tmp/kdl/kernel.development.sweet ] || { rm -f tools/.wl-boot.sh; echo "build of the boot image failed"; exit 1; }
 rm -f tools/.wl-boot.sh
 if ! fastboot devices | grep -q fastboot; then
 	echo "phone not in fastboot: asking iOS to restart into the bootloader (UDP 5141)"
@@ -41,6 +42,6 @@ for i in $(seq 1 90); do
 	sleep 10
 done
 sleep 30
-tail -n +$start logs/bridge.log | grep -a -E 'FATAL|wlanmdsp.mbn (done|stalled|ACK)|RESUME_TX|64K chunk|asked again|unexpected packet|OACK|raw RRQ|confirm_rx|non-request|SWEET (WLFW|WLCE|WLSMMU)|intent for|refused' |
+tail -n +$start logs/bridge.log | grep -a -E 'adreno: summary|THE GPU|FATAL|wlanmdsp.mbn (done|stalled|ACK)|RESUME_TX|64K chunk|asked again|unexpected packet|OACK|raw RRQ|confirm_rx|non-request|SWEET (WLFW|WLCE|WLSMMU)|intent for|refused' |
 	grep -v 'done, 0 bytes' | cut -c1-200 | awk '!seen[$0]++' | tail -60 > logs/wl-last.txt
 cat logs/wl-last.txt

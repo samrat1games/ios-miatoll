@@ -1,0 +1,15 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2604,6 +2604,7 @@
+ 		 * 0162: if the readback kept BYPASS, the value the probe wrote IS the SID 0xc0 rule (type BYPASS needs no
+ 		 * context bank) and it takes effect only once SMR70 is valid; rewriting it keeps both paths the same.
+-		 * S2CR type is bits 17:16: 0 FAULT, 1 BYPASS, 2 TRANSLATE (0141 wrote the bare bank number = FAULT, so its
+-		 * shared-bank rule could never translate); the quirk path is TRANSLATE to the boot loader's bypass bank.
++		 * 0165: S2CR type is bits 17:16: 0 TRANSLATE, 1 BYPASS, 2 FAULT (ARM SMMUv2 / Linux ARM_SMMU_S2CR_TYPE_*). 0162
++		 * had it backwards and wrote 0x20000 = FAULT. The quirk path is TRANSLATE (type 0) to a bank whose CBAR is
++		 * S1_TRANS_S2_BYPASS with SCTLR.M off, i.e. exactly what Linux arm-smmu-qcom reserves as bypass_cbndx.
+ 		 */
+-		uint32_t rule = quirk ? ((2u << 16) | ((uint32_t)shared & 0xffu)) : ((1u << 16) | 0xffu);
++		uint32_t rule = quirk ? ((uint32_t)shared & 0xffu) : ((1u << 16) | 0xffu);
+ 		printf("SWEET WLSMMU: writing S2CR%d %#x (type %u) and SMR%d 0x800100c0\n", smr, rule, (rule >> 16) & 3, smr);
