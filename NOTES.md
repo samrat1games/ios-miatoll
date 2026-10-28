@@ -844,3 +844,9 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - "Miatoll via PC" fake Wi-Fi is already off by default since 0117 (miatollwifi=1 brings it back).
 - Real Wi-Fi scan after HTC READY (HTC connect, WMI ready, start_scan, results -> redwood_apple80211.c) is NOT written.
 - hakios-metal (oosexgang, MIT): blits/command queue only, no shaders, expects the msm-DRM RedwoodGPU service; not integrated.
+
+## Handoff 2026-10-28 (night): Wi-Fi via Linux ath10k on oosexgang's lx layer - STARTED
+- Read-only copy of oosexgang/hackios-xnu-kernel `wifi/lx`, `hakios.lx.c/.h`, `hakios.wifi.c`, `mk-ath11k.sh` in `wifi/lx`, `wifi/oo-glue`
+  (their account is not the user's: nothing is ever pushed there). Port plan: `wifi/oo-glue/README.md`.
+- Their README: Wi-Fi works (WCN6750/ath11k), cellular in progress, Bluetooth NOT yet; App Store/Apple ID are plain iOS userland.
+- Open: last boot (patch 0165 kernel) panicked after GPU+modem start; panic text only on screen (needs a photo). Kernel from CI 40695721822.
