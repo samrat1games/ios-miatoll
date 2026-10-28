@@ -850,3 +850,14 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   (their account is not the user's: nothing is ever pushed there). Port plan: `wifi/oo-glue/README.md`.
 - Their README: Wi-Fi works (WCN6750/ath11k), cellular in progress, Bluetooth NOT yet; App Store/Apple ID are plain iOS userland.
 - Open: last boot (patch 0165 kernel) panicked after GPU+modem start; panic text only on screen (needs a photo). Kernel from CI 40695721822.
+
+## Handoff 2026-10-29: ROOT CAUSE of the "random illegal PA" panics found (patch 0172)
+- 0171 (panic text + backtrace flushed to the ring at panic) caught it: gemNew -> IOBufferMemoryDescriptor::initWithPhysicalMask ->
+  IOGeneralMemoryDescriptor::memoryReferenceCreate -> mach_make_memory_entry_internal -> vm_object_change_wimg_mode ->
+  pmap_set_cache_attributes -> pmap_sync_page_attributes_phys -> flush_dcache(pp << PAGE_SHIFT) with `pp` a 32-bit ppnum_t:
+  the shift overflowed 32 bits, so RAM at 0x1_2001_4000 became 0x2001_4000 -> phystokv_range "illegal PA" (every "random" PA seen
+  so far = real PA - 0x100000000: 0x10d30000, 0xb354000, 0x1e554000, 0x17458000, 0x20014000). Any page whose cache mode changes
+  (the first GPU buffer, IOSurface wimg changes) hit it. Fix 0172 = (vm_offset_t)pp << PAGE_SHIFT (osfmk/arm/pmap/pmap.c:6880).
+- The kmem_alloc(786432) KERN_NO_SPACE panic was a different bug: 12 CE rings x 32 x 2 KiB contiguous (fixed in 0168, per-ring 64 KiB).
+- 0169 (refuse user nexus, sk_user_nexus=1 allows) turned out unrelated (rapportd was a red herring); consider reverting it.
+- Boot arg ufslogsecs=1 makes the ring flush every second; logs/recovery-0171.txt has the first panic text.

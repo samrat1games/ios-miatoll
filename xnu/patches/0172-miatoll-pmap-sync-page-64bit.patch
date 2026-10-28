@@ -1,0 +1,16 @@
+diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -6876,6 +6876,11 @@
+ void
+ pmap_sync_page_attributes_phys(
+ 	ppnum_t pp)
+ {
+-	flush_dcache((vm_offset_t) (pp << PAGE_SHIFT), PAGE_SIZE, TRUE);
++	/*
++	 * SWEET 0172: pp is 32 bits, so (pp << PAGE_SHIFT) was computed in 32 bits and lost every address above 4 GiB:
++	 * our RAM starts at 0x100000000, page 0x120014000 became 0x20014000 and phystokv_range panicked "illegal PA"
++	 * whenever a page's cache attributes changed (the first RedwoodGPU gemNew; 0x10d30000, 0xb354000, 0x17458000...).
++	 */
++	flush_dcache(((vm_offset_t) pp) << PAGE_SHIFT, PAGE_SIZE, TRUE);
+ }
