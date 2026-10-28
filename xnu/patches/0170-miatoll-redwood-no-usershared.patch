@@ -1,0 +1,20 @@
+diff --git a/iokit/Kernel/arm/RedwoodGPU.cpp b/iokit/Kernel/arm/RedwoodGPU.cpp
+--- a/iokit/Kernel/arm/RedwoodGPU.cpp
++++ b/iokit/Kernel/arm/RedwoodGPU.cpp
+@@ -868,4 +868,14 @@
+ 	/* (the memory comes zeroed, and making it write-combined pushes the zeroes out of the cache) */
+-	memory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIODirectionInOut | kIOMemoryKernelUserShared |
+-	    (gGPUCached ? 0 : kIOMapWriteCombineCache), (vm_size_t) size, PAGE_SIZE);
++	/*
++	 * 0170: kIOMemoryKernelUserShared is what the first buffer of every run stops in (the log ends at "allocating" and the
++	 * panic is phystokv_range: illegal PA, a different PA each boot). Plain wired kernel memory is mapped to the client
++	 * the same way through the descriptor; gpu_usershared=1 brings the old allocation back.
++	 */
++	static int usershared = -1;
++	if (usershared < 0) {
++		uint32_t v = 0;
++		usershared = PE_parse_boot_argn("gpu_usershared", &v, sizeof(v)) && v != 0;
++	}
++	memory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIODirectionInOut |
++	    (usershared ? kIOMemoryKernelUserShared : 0) | (gGPUCached ? 0 : kIOMapWriteCombineCache), (vm_size_t) size, PAGE_SIZE);
+ 	if (memory == NULL) {
