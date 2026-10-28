@@ -1,0 +1,33 @@
+diff --git a/bsd/skywalk/nexus/nexus.c b/bsd/skywalk/nexus/nexus.c
+--- a/bsd/skywalk/nexus/nexus.c
++++ b/bsd/skywalk/nexus/nexus.c
+@@ -31,3 +31,4 @@
+ #include <skywalk/nexus/flowswitch/nx_flowswitch.h>
+ #include <sys/sdt.h>
++#include <pexpert/pexpert.h>
+ 
+@@ -1454,4 +1455,24 @@
+ 	ASSERT(nxctl->nxctl_cred != proc_ucred(kernproc));
+ 	*err = 0;
++
++	/*
++	 * SWEET 0169: a user-space nexus provider (rapportd, ...) takes nxprov_create_common() -> skmem regions, and on this
++	 * kernel that sometimes panics phystokv_range: illegal PA (0x10d30000, 0xb354000, 0x1e554000 on different boots,
++	 * rapportd(81) in the log line before). Userland falls back when the provider is refused. sk_user_nexus=1 allows it.
++	 */
++	{
++		static int allowed = -1;
++		if (allowed < 0) {
++			int v = 0;
++			if (!PE_parse_boot_argn("sk_user_nexus", &v, sizeof(v))) {
++				v = 0;
++			}
++			allowed = v != 0;
++		}
++		if (!allowed) {
++			*err = ENXIO;
++			return NULL;
++		}
++	}
+ 
+ 	switch (nxp->nxp_type) {
