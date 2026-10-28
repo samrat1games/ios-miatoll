@@ -95,30 +95,52 @@ static int keys_init(void)
 extern void menu_android(void);
 extern void menu_poweroff(void);
 
-static int gpu_on = 1, draw_on = 1, metal_on = 0;
+static int opt[3] = { 1, 1, 0 };	/* GPU, GPU drawing, Metal */
+#define gpu_on opt[0]
+#define draw_on opt[1]
+#define metal_on opt[2]
 static char args[96];
 
 static void build_args(void)
 {
 	char *p = args;
-	const char *parts[3] = { gpu_on ? "" : " gpu=0", gpu_on && !draw_on ? " gl=0" : "", metal_on && gpu_on ? " metal=1" : "" };
-	*p = 0;
-	for (int i = 0; i < 3; ++i)
-		for (const char *s = parts[i]; *s && p < args + sizeof(args) - 1; )
+	for (int i = 0; i < 3; ++i) {
+		const char *s = i == 0 ? (gpu_on ? "" : " gpu=0") : i == 1 ? (gpu_on && !draw_on ? " gl=0" : "") :
+		    (metal_on && gpu_on ? " metal=1" : "");
+		while (*s && p < args + sizeof(args) - 1)
 			*p++ = *s++;
+	}
 	*p = 0;
 }
 
-static void draw(const char *title, const char *const *items, const char *const *state, int n, int sel)
+/* list 0 = main menu, 1 = iOS Settings; strings come from switches, not pointer tables (the image has no relocation pass) */
+static const char *item_text(int list, int i)
+{
+	if (list == 0)
+		return i == 0 ? "Boot iOS" : i == 1 ? "iOS Settings" : i == 2 ? "Boot Android" : "Power off";
+	return i == 0 ? "GPU" : i == 1 ? "GPU drawing" : i == 2 ? "Metal" : "Back";
+}
+
+static const char *onoff(int v) { return v ? "  : ON" : "  : OFF"; }
+
+static const char *item_state(int list, int i)
+{
+	if (list == 0 || i > 2)
+		return 0;
+	return onoff(opt[i]);
+}
+
+static void draw(const char *title, int list, int n, int sel)
 {
 	con_at(1, "iMiatoll UEFI", 0xffffffffU, BG);
 	con_at(2, title, DIM, BG);
 	for (int i = 0; i < n; ++i) {
 		char line[64];
 		int k = 0;
-		for (const char *s = items[i]; *s && k < 40; ) line[k++] = *s++;
-		if (state && state[i])
-			for (const char *s = state[i]; *s && k < 62; ) line[k++] = *s++;
+		const char *st = item_state(list, i);
+		for (const char *s = item_text(list, i); *s && k < 40; ) line[k++] = *s++;
+		if (st)
+			for (const char *s = st; *s && k < 62; ) line[k++] = *s++;
 		line[k] = 0;
 		con_at(4 + i * 2, line, 0xffffffffU, i == sel ? SEL : BG);
 	}
@@ -126,11 +148,11 @@ static void draw(const char *title, const char *const *items, const char *const 
 }
 
 /* one list; returns the chosen index, or -1 on timeout / unreadable keys */
-static int pick(const char *title, const char *const *items, const char *const *(*states)(void), int n)
+static int pick(const char *title, int list, int n)
 {
 	int sel = 0;
 	uint64_t deadline = cnt() + frq() * MENU_TIMEOUT_S;
-	draw(title, items, states ? states() : 0, n, sel);
+	draw(title, list, n, sel);
 	for (;;) {
 		int e = key_event();
 		if (e < 0)
@@ -140,7 +162,7 @@ static int pick(const char *title, const char *const *items, const char *const *
 			if (e == 1)
 				return sel;
 			sel = (sel + (e == 3 ? 1 : n - 1)) % n;
-			draw(title, items, states ? states() : 0, n, sel);
+			draw(title, list, n, sel);
 		}
 		if (cnt() > deadline)
 			return -1;
@@ -148,23 +170,13 @@ static int pick(const char *title, const char *const *items, const char *const *
 	}
 }
 
-static const char *onoff(int v) { return v ? "  : ON" : "  : OFF"; }
-static const char *st_buf[4];
-static const char *const *settings_states(void)
-{
-	st_buf[0] = onoff(gpu_on); st_buf[1] = onoff(draw_on); st_buf[2] = onoff(metal_on); st_buf[3] = 0;
-	return st_buf;
-}
-
 const char *menu_run(void)
 {
-	static const char *const main_items[] = { "Boot iOS", "iOS Settings", "Boot Android", "Power off" };
-	static const char *const set_items[] = { "GPU", "GPU drawing", "Metal", "Back" };
 	con_clear(BG);
 	if (!keys_init())
 		return "";
 	for (;;) {
-		int c = pick("Redmi Note 9S", main_items, 0, 4);
+		int c = pick("Redmi Note 9S", 0, 4);
 		if (c <= 0) {
 			build_args();
 			return args;
@@ -174,12 +186,10 @@ const char *menu_run(void)
 		if (c == 3)
 			menu_poweroff();
 		for (;;) {
-			int s = pick("iOS Settings", set_items, settings_states, 4);
+			int s = pick("iOS Settings", 1, 4);
 			if (s < 0 || s == 3)
 				break;
-			if (s == 0) gpu_on = !gpu_on;
-			if (s == 1) draw_on = !draw_on;
-			if (s == 2) metal_on = !metal_on;
+			opt[s] = !opt[s];
 		}
 		con_clear(BG);
 	}
