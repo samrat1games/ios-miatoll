@@ -1,0 +1,97 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 3d42405..6768c58 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2521,20 +2521,22 @@ wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
+ 			used[c & 0xff] = 1;
+ 		}
+ 	}
+-	printf("SWEET WLSMMU: bank scan of %u banks\n", ncb);
++	/*
++	 * 0162: banks 0-3 only. 4-60 belong to the boot loader/secure world: their CBAR reads back 0 and their SCTLR
++	 * page returns noise (0140), and the 0159 boot stopped inside the first chunk - a burst of reads. A register
++	 * block that is not ours either answers with noise or not at all: a missing bus response stalls the load with no
++	 * abort, so there is no panic and the rest of the machine keeps running (that is what the log shows). Four known
++	 * banks are all the 0153 rule needs.
++	 */
++	printf("SWEET WLSMMU: bank scan of %u banks, reading 0-3 only\n", ncb);
+ 	touch_wait(300);
+-	for (uint32_t i = 0; i < ncb; i += 8) {
+-		char line[200];
+-		uint32_t o = 0;
+-		printf("SWEET WLSMMU: bank chunk %u\n", i);
+-		for (uint32_t k = i; k < i + 8 && k < ncb && o + 24 < sizeof(line); ++k) {
+-			o += (uint32_t)snprintf(line + o, sizeof(line) - o, " %u:%x/%x%s", k, sm_r32(g1 + 4 * k),
+-			    sm_r32(g + cbbase + k * pg), used[k] ? "*" : "");
+-		}
+-		printf("SWEET WLSMMU: banks%s\n", line);
++	for (uint32_t k = 0; k < ncb && k < 4; ++k) {
++		uint32_t cbar = sm_r32(g1 + 4 * k);            /* the CBAR page always answered */
++		uint32_t sctlr = cbar ? sm_r32(g + cbbase + k * pg) : 0;  /* CB page only for a bank that is set up */
++		printf("SWEET WLSMMU: bank %u: CBAR %#x SCTLR %#x%s\n", k, cbar, sctlr, used[k] ? " (stream target)" : "");
+ 		touch_wait(300);
+ 	}
+-	printf("SWEET WLSMMU: bank scan done\n");
++	printf("SWEET WLSMMU: bank scan done, banks 4-%u not touched\n", ncb > 4 ? ncb - 1 : 4);
+ 	touch_wait(300);
+ 	/*
+ 	 * 0153: follow Linux arm-smmu-qcom.c's cfg probe. Some Qualcomm firmware rewrites an S2CR write of type BYPASS
+@@ -2585,9 +2587,9 @@ wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
+ 		uint32_t q = sm_r32(g + 0xc00 + 4 * last);
+ 		int quirk = ((q >> 16) & 3) != 1;
+ 		int shared = -1;
+-		for (uint32_t i = 0; i < ncb && shared < 0; ++i) {
+-			uint32_t cbar = sm_r32(g1 + 4 * i), sctlr = sm_r32(g + cbbase + i * pg);
+-			if (used[i] && ((cbar >> 16) & 3) == 1 && !(sctlr & 1u)) {
++		for (uint32_t i = 0; i < ncb && i < 4 && shared < 0; ++i) {     /* 0162: banks 0-3 only */
++			uint32_t cbar = sm_r32(g1 + 4 * i);
++			if (used[i] && ((cbar >> 16) & 3) == 1 && !(sm_r32(g + cbbase + i * pg) & 1u)) {
+ 				shared = (int)i;
+ 			}
+ 		}
+@@ -2596,27 +2598,34 @@ wlan_smmu_bypass(uint32_t idr0, uint32_t idr1)
+ 		if (smr < 0 || (quirk && shared < 0)) {
+ 			return 0;
+ 		}
+-		uint32_t rule = quirk ? (uint32_t)shared : ((1u << 16) | 0xffu);
+-		printf("SWEET WLSMMU: writing S2CR%d %#x and SMR%d\n", smr, rule, smr);
++		/*
++		 * 0162: if the readback kept BYPASS, the value the probe wrote IS the SID 0xc0 rule (type BYPASS needs no
++		 * context bank) and it takes effect only once SMR70 is valid; rewriting it keeps both paths the same.
++		 * S2CR type is bits 17:16: 0 FAULT, 1 BYPASS, 2 TRANSLATE (0141 wrote the bare bank number = FAULT, so its
++		 * shared-bank rule could never translate); the quirk path is TRANSLATE to the boot loader's bypass bank.
++		 */
++		uint32_t rule = quirk ? ((2u << 16) | ((uint32_t)shared & 0xffu)) : ((1u << 16) | 0xffu);
++		printf("SWEET WLSMMU: writing S2CR%d %#x (type %u) and SMR%d 0x800100c0\n", smr, rule, (rule >> 16) & 3, smr);
+ 		touch_wait(300);
+ 		sm_w32(g + 0xc00 + 4 * (uint32_t)smr, rule);
+ 		__asm__ volatile("dsb sy" : : : "memory");
+ 		sm_w32(g + 0x800 + 4 * (uint32_t)smr, 0x80000000u | (1u << 16) | 0xc0u);
+ 		__asm__ volatile("dsb sy" : : : "memory");
+ 		uint32_t rs = sm_r32(g + 0x800 + 4 * (uint32_t)smr), rc = sm_r32(g + 0xc00 + 4 * (uint32_t)smr);
+-		int okk = (rs & 0x8000ffffu) == 0x800000c0u && ((rc >> 16) & 3) == (quirk ? 0u : 1u) &&
+-		    (!quirk || (rc & 0xffu) == (uint32_t)shared);
+-		printf("SWEET WLSMMU: SID 0xc0 rule: SMR%d %#x S2CR%d %#x (type %u cb %u) -> %s\n", smr, rs, smr, rc,
+-		    (rc >> 16) & 3, rc & 0xffu, okk ? "physical DMA should work" : "refused");
+-		for (unsigned r = 0; r < 15; ++r) {                     /* the USB log drops bursts: repeat the verdict */
+-			printf("SWEET WLSMMU: SID 0xc0 -> %s (ok %d), SMR%d %#x S2CR %#x, sGFSR %#x\n",
++		/* exact for SMR (valid, mask 1, SID 0xc0); S2CR: type + context bank (firmware may add MEMATTR bits) */
++		int okk = rs == 0x800100c0u && (rc & 0x300ffu) == (rule & 0x300ffu);
++		printf("SWEET WLSMMU: SID 0xc0 rule: SMR%d %#x S2CR%d %#x (type %u cb %u), want S2CR %#x -> %s\n", smr, rs, smr,
++		    rc, (rc >> 16) & 3, rc & 0xffu, rule, okk ? "physical DMA should work" : "refused");
++		for (unsigned r = 0; r < 10; ++r) {                     /* the USB log drops bursts: repeat the verdict */
++			printf("SWEET WLSMMU: SID 0xc0 -> %s (ok %d), SMR%d %#x S2CR %#x, sGFSR %#x sACR %#x\n",
+ 			    quirk ? "shared bypass bank" : "S2CR bypass", okk, smr,
+-			    sm_r32(g + 0x800 + 4 * (uint32_t)smr), sm_r32(g + 0xc00 + 4 * (uint32_t)smr), sm_r32(g + 0x48));
+-			touch_wait(3000);
++			    sm_r32(g + 0x800 + 4 * (uint32_t)smr), sm_r32(g + 0xc00 + 4 * (uint32_t)smr), sm_r32(g + 0x48),
++			    sm_r32(g + 0x10));
++			touch_wait(300);
+ 		}
+ 		return okk;
+ 	}
+-	for (int i = (int)ncb - 1; i >= 0 && cb < 0; --i) {
++	for (int i = 3; i >= 0 && cb < 0; --i) {                /* 0162: never read a bank above 3 */
+ 		if (!used[i] && !(sm_r32(g + cbbase + (uint32_t)i * pg) & 1u)) {
+ 			cb = i;                         /* no stream points here and translation is off */
+ 		}

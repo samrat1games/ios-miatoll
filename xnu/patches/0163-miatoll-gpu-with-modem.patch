@@ -1,0 +1,29 @@
+diff --git a/bsd/dev/miatoll_adreno.c b/bsd/dev/miatoll_adreno.c
+--- a/bsd/dev/miatoll_adreno.c
++++ b/bsd/dev/miatoll_adreno.c
+@@ -5239,15 +5239,19 @@
+ 		return;
+ 	}
+ 	/*
+-	 * 0160: TrustZone serves one client at a time: the cellular modem's PIL start and the GPU's zap shader both go
+-	 * through it, and a boot with both leaves the GPU dead. When the modem is asked for, the GPU stays off.
++	 * 0160 kept the GPU off whenever the modem was asked for, on the theory that TrustZone serves one client at a
++	 * time. 0163 lets a boot ask for both (gpu_with_modem=1) and the step trace then says what TrustZone answers.
+ 	 */
+ 	{
+-		uint32_t modem = 0;
++		uint32_t modem = 0, together = 0;
+ 		if (PE_parse_boot_argn("sweetmodem", &modem, sizeof(modem)) && modem) {
+-			printf("adreno: the modem is on this boot (sweetmodem=%u): the GPU stays off, TrustZone takes one "
+-			    "client at a time\n", modem);
+-			return;
++			if (!PE_parse_boot_argn("gpu_with_modem", &together, sizeof(together)) || !together) {
++				printf("adreno: the modem is on this boot (sweetmodem=%u): the GPU stays off, TrustZone takes one "
++				    "client at a time (gpu_with_modem=1 tries anyway)\n", modem);
++				return;
++			}
++			printf("adreno: the modem is on and gpu_with_modem=%u: starting the GPU anyway (step trace follows)\n",
++			    together);
+ 		}
+ 	}
+ 	adreno_starting = 1;

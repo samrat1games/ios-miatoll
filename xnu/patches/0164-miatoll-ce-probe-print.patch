@@ -1,0 +1,19 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 6768c58..8618d59 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2890,6 +2890,14 @@ wl_ce_start(void)
+ 		return ENOMEM;
+ 	}
+ 	printf("SWEET WLCE: rings at pa %#llx, buffers at pa %#llx\n", wl.mem_pa, wl.buf_pa);
++	/*
++	 * 0164: this is the first read of the copy engine block on any boot (before 0162 the SMMU rule refused and the
++	 * engine was never started). If the block is not clocked, a load can stall with no abort and no panic, so say
++	 * where we are before the first register access.
++	 */
++	printf("SWEET WLCE: probing %u copy engines at %#llx, the first register read comes next\n", WL_CE_NUM,
++	    (unsigned long long)WL_MEM_PA);
++	touch_wait(300);
+ 	for (unsigned i = 0; i < WL_CE_NUM; ++i) {
+ 		uint32_t base = WL_CE(i), c1;
+ 		if (wl_ce_cfg[i].src_n) {
