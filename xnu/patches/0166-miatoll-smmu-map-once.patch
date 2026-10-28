@@ -1,0 +1,17 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2493,7 +2493,12 @@
+ 	/* 0159: the thread stops somewhere between "bypass enter" and the sACR print; a print before each step says where */
+ 	printf("SWEET WLSMMU: mapping %#x bytes at %#llx\n", cbbase + ncb * pg, SMMU_PA);
+ 	touch_wait(300);
+-	vm_offset_t g = ml_io_map(SMMU_PA, cbbase + ncb * pg);
++	/*
++	 * 0166: ml_io_map() is never undone and the probe runs twice per boot (two firmware starts): each call took
++	 * another 768 KiB of the kernel map, and the second one panicked kmem_alloc(786432) KERN_NO_SPACE with the GPU on.
++	 */
++	static vm_offset_t smmu_mapped;
++	vm_offset_t g = smmu_mapped ? smmu_mapped : (smmu_mapped = ml_io_map(SMMU_PA, cbbase + ncb * pg));
+ 	printf("SWEET WLSMMU: mapped at %p\n", (void *)g);
+ 	touch_wait(300);
+ 	if (!g || !nsmr || !ncb) {
