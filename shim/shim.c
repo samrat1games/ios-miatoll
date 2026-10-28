@@ -11,6 +11,7 @@
 #include "console.h"
 #include "mmu.h"
 #include "loader.h"
+#include "menu.h"
 #include "ufs.h"
 
 #define RESTART_BOOTLOADER	0x77665500U
@@ -366,6 +367,25 @@ static uint32_t to_us(uint64_t ticks)
 	return ticks * 10 / 192;	/* 19.2 MHz */
 }
 
+/* Android: a normal restart (no bootloader reason); the boot partition's own kernel starts, the shim was temporary */
+void menu_android(void)
+{
+	wr32(IMEM_RESTART_REASON, 0);
+	__asm__ volatile("dsb sy" ::: "memory");
+	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
+	wr32(PSHOLD, 0);
+	for (;;)
+		__asm__ volatile("wfe");
+}
+
+void menu_poweroff(void)
+{
+	smc(0x84000008UL, 0, 0, 0);     /* PSCI SYSTEM_OFF */
+	wr32(PSHOLD, 0);
+	for (;;)
+		__asm__ volatile("wfe");
+}
+
 void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
@@ -375,7 +395,11 @@ void shim_main(uint64_t dtb)
 	con_logo();
 	con_str("SHIM", "sweet milestone 4: xnu loader");
 	con_skip();
-	const char *why = loader_boot(dtb);
+	const char *extra = "";
+#ifdef MENU
+	extra = menu_run();
+#endif
+	const char *why = loader_boot(dtb, extra);
 	con_clear(RED);
 	con_str("SHIM", "sweet milestone 4: xnu loader");
 	con_skip();

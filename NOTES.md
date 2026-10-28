@@ -833,3 +833,14 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   gemNew (0x42) -> gemInfo (0x43) -> submit (0x46) and then steady work:
   `RedwoodGPU: 390 submissions in 5316 ms: 1888 command buffers and 20281 buffers named ...`.
 - 0157 makes that the default (gpu_cached=0 asks for write-combined again).
+
+## Handoff 2026-10-28 (late): iMiatoll UEFI menu + 0165
+- `shim/menu.c` (new, compiled with `MENU=1 shim/build.sh`): "iMiatoll UEFI" menu - Boot iOS / iOS Settings (GPU on/off -> `gpu=0`,
+  GPU drawing on/off -> `gl=0`, Metal -> `metal=1`, no kernel reader yet) / Boot Android (PSCI reset, restart reason 0 = whatever the
+  boot partition holds) / Power off (PSCI SYSTEM_OFF). Keys = the 0060 SPMI observer reads (vol up/down move, power selects); 20 s
+  without a key or unreadable keys -> iOS boots with defaults. `loader_boot(dtb, extra)` appends the menu args to the payload cmdline.
+  NOT booted yet. Touch is not in the shim (GENI I2C Goodix would have to be ported from sweet_touch.c).
+- 0165: S2CR type is 0 TRANSLATE / 1 BYPASS / 2 FAULT; 0162 wrote 0x20000 = FAULT. Fix = bank number with type 0.
+- "Miatoll via PC" fake Wi-Fi is already off by default since 0117 (miatollwifi=1 brings it back).
+- Real Wi-Fi scan after HTC READY (HTC connect, WMI ready, start_scan, results -> redwood_apple80211.c) is NOT written.
+- hakios-metal (oosexgang, MIT): blits/command queue only, no shaders, expects the msm-DRM RedwoodGPU service; not integrated.

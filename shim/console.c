@@ -122,3 +122,18 @@ void con_logo(void)
 	}
 	quiet = 1;
 }
+
+/* one menu line at text row r: the whole row is filled with bg first, so a changed selection redraws only its lines */
+void con_at(int r, const char *s, uint32_t fg, uint32_t bg)
+{
+	quiet = 0;
+	con_bg = bg;
+	int y0 = MARGIN + r * CH_H;
+	for (int y = y0; y < y0 + CH_H && y < FB_H; y++) {
+		volatile uint32_t *line = con_fb + y * (FB_STRIDE / 4);
+		for (int x = 0; x < FB_W; x++)
+			line[x] = bg;
+	}
+	row = r;
+	put_str(1, s, fg);
+}

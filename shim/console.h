@@ -17,6 +17,7 @@ extern volatile uint32_t *con_fb;
 void con_clear(uint32_t bg);
 void con_logo(void);
 void con_skip(void);
+void con_at(int r, const char *s, uint32_t fg, uint32_t bg);
 void con_str(const char *label, const char *s);
 void con_hex(const char *label, uint64_t v);
 /* label, then "a=xxxxxxxx b=xxxxxxxx" style pairs of 32-bit values */

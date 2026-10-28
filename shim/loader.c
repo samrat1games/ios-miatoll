@@ -76,7 +76,7 @@ static int magic_ok(const char *m)
 
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
-const char *loader_boot(uintptr_t dtb)
+const char *loader_boot(uintptr_t dtb, const char *extra)
 {
 	uint64_t rd_start, rd_end;
 
@@ -133,6 +133,15 @@ const char *loader_boot(uintptr_t dtb)
 	ba->deviceTreeLength = (uint32_t)p->adt_size;
 	for (int i = 0; i < BOOT_LINE_LENGTH; i++)
 		ba->CommandLine[i] = p->cmdline[i];
+	/* the menu's boot-args (iMiatoll UEFI), appended after the payload's own; later args win in PE_parse_boot_argn */
+	{
+		int n = 0;
+		while (n < BOOT_LINE_LENGTH - 1 && ba->CommandLine[n])
+			n++;
+		for (; extra && *extra && n < BOOT_LINE_LENGTH - 1; extra++)
+			ba->CommandLine[n++] = *extra;
+		ba->CommandLine[n] = 0;
+	}
 	ba->memSizeActual = p->mem_size;
 	con_hex2("BOOTARG", "pa=", ba_pa, "top=", top);
 
