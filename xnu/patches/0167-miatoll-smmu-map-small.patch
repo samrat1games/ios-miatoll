@@ -1,0 +1,49 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -370,7 +370,16 @@
+ static vm_offset_t sm_smem;
+ 
+-static inline uint32_t
+-sm_r32(vm_offset_t a)
+-{
+-	return *(volatile uint32_t *)a;
+-}
++/*
++ * 0167: the SMMU is mapped in two small pieces (global pages, context banks 0-3): one 768 KiB mapping fails with
++ * KERN_NO_SPACE once the GPU has fragmented the kernel map. wlan_smmu_bypass() is written against one linear mapping,
++ * so accesses inside the window [sm_win_base, +sm_win_len) go to the real mapping sm_win_real; all others are plain.
++ */
++static vm_offset_t sm_win_base, sm_win_real;
++static vm_size_t sm_win_len;
++#define SM_XLAT(a) (((a) - sm_win_base) < sm_win_len ? sm_win_real + ((a) - sm_win_base) : (a))
++
++static inline uint32_t
++sm_r32(vm_offset_t a)
++{
++	return *(volatile uint32_t *)SM_XLAT(a);
++}
+@@ -452,5 +452,5 @@
+ static inline void
+ sm_w32(vm_offset_t a, uint32_t v)
+ {
+-	*(volatile uint32_t *)a = v;
++	*(volatile uint32_t *)SM_XLAT(a) = v;
+ }
+@@ -2496,6 +2496,14 @@
+ 	 * 0166: ml_io_map() is never undone and the probe runs twice per boot (two firmware starts): each call took
+ 	 * another 768 KiB of the kernel map, and the second one panicked kmem_alloc(786432) KERN_NO_SPACE with the GPU on.
+ 	 */
+-	static vm_offset_t smmu_mapped;
+-	vm_offset_t g = smmu_mapped ? smmu_mapped : (smmu_mapped = ml_io_map(SMMU_PA, cbbase + ncb * pg));
++	/* 0167: not one 768 KiB mapping (it panicked with KERN_NO_SPACE even once): global pages + banks 0-3, once */
++	static vm_offset_t smmu_lo, smmu_cb;
++	if (!smmu_lo || !smmu_cb) {
++		smmu_lo = ml_io_map(SMMU_PA, 2 * pg);
++		smmu_cb = ml_io_map(SMMU_PA + cbbase, 4 * pg);
++	}
++	vm_offset_t g = smmu_lo && smmu_cb ? smmu_lo : 0;
++	sm_win_base = g + cbbase;
++	sm_win_len = 4 * pg;
++	sm_win_real = smmu_cb;
+ 	printf("SWEET WLSMMU: mapped at %p\n", (void *)g);
