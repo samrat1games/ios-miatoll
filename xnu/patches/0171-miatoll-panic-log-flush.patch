@@ -1,0 +1,103 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -756,6 +756,60 @@
+ 		thread_deallocate(thread);
+ 	}
+ }
+ 
++/*
++ * 0171: the panic path. A panic stops the flush thread, so everything printed in the last ufslogsecs seconds (the
++ * backtrace the patches 0161 print right before a panic, and the panic text itself) never reached the disk and only
++ * the screen showed it. panic_trap_to_debugger() calls this on the panicking CPU: the panic text goes into the ring
++ * and the last 64 KiB of the ring is written out at once (the UFS lock is only tried: if the flush thread holds it, the
++ * panic is as lost as before).
++ */
++void sweet_log_panic_flush(const char *text);
++
++void
++sweet_log_panic_flush(const char *text)
++{
++	void *bounce = (void *)(su.dma + DMA_BOUNCE);
++	uint64_t base, total, pos;
++	int error = 0;
++
++	if (!su.writable || su.nblocks < 2 * SWEET_LOG_BLOCKS) {
++		return;
++	}
++	if (text != NULL) {
++		sweet_log_append(text, (int)strlen(text));
++	}
++	total = os_atomic_load(&sweet_log_total, relaxed);
++	pos = total > (64u << 10) ? total - (64u << 10) : 0;
++	base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
++	if (!lck_mtx_try_lock(&sweet_ufs_lock)) {
++		return;
++	}
++	while (pos < total && !error) {
++		uint32_t off = (uint32_t)(pos % SWEET_LOG_SIZE);
++		uint32_t blk = off / UFS_BLOCK;
++		uint64_t need = ((uint64_t)off % UFS_BLOCK + (total - pos) + UFS_BLOCK - 1) / UFS_BLOCK;
++		uint32_t n = (uint32_t)MIN(MIN(need, (uint64_t)(SWEET_LOG_SIZE / UFS_BLOCK - blk)),
++		    (uint64_t)(BOUNCE_SIZE / UFS_BLOCK));
++		memcpy(bounce, sweet_log_ring + (uint64_t)blk * UFS_BLOCK, n * UFS_BLOCK);
++		error = ufs_write_blocks(base + 1 + blk, n);
++		pos += (uint64_t)(blk + n) * UFS_BLOCK - off;
++	}
++	if (!error) {
++		struct sweet_log_header h = {
++			.magic = { 'S', 'W', 'E', 'E', 'T', 'L', 'O', 'G' },
++			.version = 1, .size = SWEET_LOG_SIZE, .total = total, .seq = 0xffffffffu,
++		};
++		bzero(bounce, UFS_BLOCK);
++		memcpy(bounce, &h, sizeof(h));
++		error = ufs_write_blocks(base, 1);
++	}
++	if (!error) {
++		(void)ufs_sync_cache();
++	}
++	lck_mtx_unlock(&sweet_ufs_lock);
++}
++
++
+ /* Root device for rd=ufsroot0 (IOFindBSDRoot). */
+ int sweet_ufs_rootdev(dev_t *dev);
+diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -125,4 +125,7 @@
+ #include <san/kcov.h>
+ 
++extern int vsnprintf(char *, size_t, const char *, va_list);
++extern void sweet_log_panic_flush(const char *text);   /* bsd/dev/sweet_ufs.c */
++
+ #if CONFIG_XNUPOST
+ #include <tests/xnupost.h>
+@@ -1076,6 +1076,27 @@
+ 	/* Turn off I/O tracing once we've panicked */
+ 	iotrace_disable();
+ 
++	/*
++	 * SWEET 0171: the panic text into the persistent console log and the log written out now (bsd/dev/sweet_ufs.c);
++	 * the flush thread does not run after a panic. Once only: a panic inside this is not tried again.
++	 */
++	{
++		static char sweet_panic_text[400];
++		static int sweet_panic_done;
++		if (!sweet_panic_done && panic_format_str != NULL) {
++			va_list sweet_args;
++			sweet_panic_done = 1;
++			strlcpy(sweet_panic_text, "\nPANIC: ", sizeof(sweet_panic_text));
++			if (panic_args != NULL) {
++				va_copy(sweet_args, *panic_args);
++				vsnprintf(sweet_panic_text + 8, sizeof(sweet_panic_text) - 10, panic_format_str, sweet_args);
++				va_end(sweet_args);
++			}
++			strlcat(sweet_panic_text, "\n", sizeof(sweet_panic_text));
++			sweet_log_panic_flush(sweet_panic_text);
++		}
++	}
++
+ 	/* call machine-layer panic handler */
+ 	ml_panic_trap_to_debugger(panic_format_str, panic_args, reason, ctx, panic_options_mask, panic_caller);
+ 
