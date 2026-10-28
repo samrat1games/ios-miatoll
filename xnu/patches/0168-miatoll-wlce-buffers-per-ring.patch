@@ -1,0 +1,27 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2880,4 +2880,9 @@
+ 	/* rings: up to 64 x 16 bytes each, 1 KiB apart, plus the read-index mirror at offset 0 */
+-	if (wl_alloc(0x10000, &wl.mem, &wl.mem_pa) || wl_alloc(WL_CE_NUM * WL_RXN * WL_BUFSZ, &wl.buf, &wl.buf_pa)) {
++	/*
++	 * 0168: the receive buffers were one physically contiguous 768 KiB block (12 rings x 32 x 2 KiB) and
++	 * kmem_alloc_contig() of that panicked KERN_NO_SPACE (kmem_alloc(786432, 0x100021)) once the GPU had taken the
++	 * RAM; every ring now gets its own 64 KiB block, the size the ring memory above already gets.
++	 */
++	if (wl_alloc(0x10000, &wl.mem, &wl.mem_pa)) {
+ 		printf("SWEET WLCE: no DMA memory\n");
+ 		return ENOMEM;
+@@ -2905,4 +2905,10 @@
+ 			wl.ce[i].dst_pa = wl.mem_pa + 0x8000 + 0x200 * i;
+-			wl.ce[i].rxbuf = wl.buf + (vm_offset_t)i * WL_RXN * WL_BUFSZ;
+-			wl.ce[i].rxbuf_pa = wl.buf_pa + (uint64_t)i * WL_RXN * WL_BUFSZ;
++			vm_offset_t ring_buf;
++			uint64_t ring_buf_pa;
++			if (wl_alloc(WL_RXN * WL_BUFSZ, &ring_buf, &ring_buf_pa)) {
++				printf("SWEET WLCE: no DMA memory for the buffers of CE%u\n", i);
++				return ENOMEM;
++			}
++			wl.ce[i].rxbuf = ring_buf;
++			wl.ce[i].rxbuf_pa = ring_buf_pa;
+ 			wl.ce[i].dst_sw = wl_r(base + WL_CE_CUR_DRRI) & (WL_RXN - 1);
