@@ -1,0 +1,18 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3449,6 +3449,14 @@ wl_ce_start(void)
+ 	}
+ 	wl_wmi_eid = wl_conn_eid;
+ 	wl_wmi_credits = (int)wl_total_credits;
++	/* 0181: ath10k connects the HTT data service too, before htc_start (ath10k_htt_connect); without it the target may not send
++	 * its service ready event. No credit flow control for it (ATH10K_HTC_CONN_FLAGS_DISABLE_CREDIT_FLOW_CTRL), no credits. */
++	{
++		int hv = wl_wmi_eid;
++		int e2 = wl_htc_connect(0x300, 8);
++		printf("SWEET WLCE: connect HTT data service: %d (endpoint %d)\n", e2, (int)wl_conn_eid);
++		wl_wmi_eid = hv;
++	}
+ 	err = wl_htc_start();
+ 	printf("SWEET WLCE: HTC setup complete sent (%d), waiting 4 s for WMI events\n", err);
+ 	wl_frames = 0;
