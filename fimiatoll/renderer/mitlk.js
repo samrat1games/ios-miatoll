@@ -23,7 +23,6 @@
     if (x >= 13 && x <= 30 && y >= 27 && y <= 40) return 1;
     if (inEll(x, y, 44, 78, 18, 12)) return 1;
     if (((x >= 8 && x <= 11) || (x >= 32 && x <= 35)) && y >= 28 && y <= 38) return 1;
-    if (inEll(x, y, 20, 77, 8, 4) || inEll(x, y, 68, 77, 8, 4)) return 1;
     return 0;
   }
   const SHADE = ['#9bffc4', '#3ddc84', '#2ab56a', '#1d8a50'];

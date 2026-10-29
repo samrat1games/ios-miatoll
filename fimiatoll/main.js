@@ -93,12 +93,22 @@ ipcMain.handle('ipsw:inspect', async (_e, file) => {
   }
 });
 
-// The root of iOS is built by the repository's tools (apfs-fuse / HFS+ need macOS or Linux): the app shows the exact command.
+// The root of iOS is built by the repository's tools (apfs-fuse / HFS+ need macOS or Linux). The app lives in <repo>/fimiatoll.
+function repoDir() {
+  const r = path.join(__dirname, '..');
+  return fs.existsSync(path.join(r, 'tools', 'ios-install.sh')) ? r : null;
+}
+ipcMain.handle('repo', async () => repoDir());
+ipcMain.handle('exists', async (_e, file) => { try { return fs.statSync(file).size; } catch { return 0; } });
+
 ipcMain.handle('ipsw:command', async (_e, ipsw, work) => {
-  const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'");
+  const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
   if (process.platform === 'win32') return { ok: false, reason: 'windows' };
+  const repo = repoDir();
+  if (!repo) return { ok: false, reason: 'norepo' };
   const script = process.platform === 'darwin' ? 'ios-install.sh' : 'ios-install-linux.sh';
-  return { ok: true, cmd: `cd <ios-miatoll> && tools/${script} ${q(ipsw)} ${q(work || path.join(os.homedir(), 'ios-work'))}` };
+  const w = work || path.join(os.homedir(), 'ios-work');
+  return { ok: true, work: w, simg: path.join(w, 'ios16-root.simg'), cmd: `cd ${q(repo)} && tools/${script} ${q(ipsw)} ${q(w)}` };
 });
 
 ipcMain.handle('terminal', async (_e, cmd) => {

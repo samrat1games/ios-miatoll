@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('fi', {
   devices: () => ipcRenderer.invoke('devices'),
   pick: (kind) => ipcRenderer.invoke('pick', kind),
   inspectIpsw: (file) => ipcRenderer.invoke('ipsw:inspect', file),
+  repo: () => ipcRenderer.invoke('repo'),
+  exists: (f) => ipcRenderer.invoke('exists', f),
   buildCommand: (ipsw, work) => ipcRenderer.invoke('ipsw:command', ipsw, work),
   openTerminal: (cmd) => ipcRenderer.invoke('terminal', cmd),
   flash: (what, file) => ipcRenderer.invoke('flash', what, file),

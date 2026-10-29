@@ -1,5 +1,6 @@
 window.I18N = {
   en: {
+    patchBuild: 'Patch the IPSW and build', building: 'Patching the IPSW…', buildWait: 'Enter your password in the Terminal window. The root is built there (about 15 min); this app notices when it is ready.', rootReady: 'iOS root is ready', startGuide: 'Start the guide',
     tabHome: 'Home', tabFlash: 'Flash', tabLearn: 'Learn', tabSettings: 'Settings',
     homeSub: 'Flash-iMiatoll: iOS on the Redmi Note 9S.', toolsOk: 'adb and fastboot found', toolsNo: 'adb / fastboot not found',
     noDevice: 'No phone found', noDeviceSub: 'Connect it with USB, in fastboot or recovery.', connected: 'Connected',
@@ -32,6 +33,7 @@ window.I18N = {
     ],
   },
   ru: {
+    patchBuild: 'Пропатчить IPSW и собрать', building: 'Патчу IPSW…', buildWait: 'Введите пароль в окне Терминала. Root собирается там (около 15 минут); приложение заметит, когда он готов.', rootReady: 'Root iOS готов', startGuide: 'Начать обучение',
     tabHome: 'Главная', tabFlash: 'Прошивка', tabLearn: 'Обучение', tabSettings: 'Настройки',
     homeSub: 'Flash-iMiatoll: iOS на Redmi Note 9S.', toolsOk: 'adb и fastboot найдены', toolsNo: 'adb / fastboot не найдены',
     noDevice: 'Телефон не найден', noDeviceSub: 'Подключите USB, в fastboot или recovery.', connected: 'Подключено',
@@ -64,6 +66,7 @@ window.I18N = {
     ],
   },
   ua: {
+    patchBuild: 'Пропатчити IPSW і зібрати', building: 'Патчу IPSW…', buildWait: 'Введіть пароль у вікні Терміналу. Root збирається там (близько 15 хвилин); застосунок помітить, коли він готовий.', rootReady: 'Root iOS готовий', startGuide: 'Почати навчання',
     tabHome: 'Головна', tabFlash: 'Прошивка', tabLearn: 'Навчання', tabSettings: 'Налаштування',
     homeSub: 'Flash-iMiatoll: iOS на Redmi Note 9S.', toolsOk: 'adb і fastboot знайдено', toolsNo: 'adb / fastboot не знайдено',
     noDevice: 'Телефон не знайдено', noDeviceSub: 'Підключіть USB, у fastboot або recovery.', connected: 'Підключено',

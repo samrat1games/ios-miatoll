@@ -8,7 +8,7 @@
     tab: 'home', lang: store.get('lang', (navigator.language || 'en').startsWith('ru') ? 'ru' : (navigator.language || '').startsWith('uk') ? 'ua' : 'en'),
     island: store.get('island', false), theme: store.get('theme', 'auto'), look: store.get('look', 'google'),
     tools: { fastboot: false, adb: false }, device: null, ipsw: null, ipswInfo: null, simg: null, image: null,
-    step: 0, busy: false, log: [], progress: 0,
+    step: 0, guide: false, work: null, expect: null, building: false, busy: false, log: [], progress: 0,
   };
   const t = (k) => (window.I18N[S.lang] && window.I18N[S.lang][k]) || window.I18N.en[k] || k;
 
@@ -81,8 +81,8 @@
     const d = S.device;
     return `<div class="hero">${logo()}</div><h1 style="text-align:center">FiMiatoll</h1><p class="sub" style="text-align:center">${t('homeSub')}</p>
       <div class="group">
-        <div class="row">${ico(d ? '#34c759' : '#8e8e93', P.phone)}<div class="txt"><b>${d ? 'Redmi Note 9S' : t('noDevice')}</b><small>${d ? `${t('connected')} · ${modeText(d.mode)} · ${d.id}` : t('noDeviceSub')}</small></div><span class="badge ${d ? 'ok' : ''}">${d ? modeText(d.mode) : '–'}</span></div>
-        <div class="row">${ico(S.tools.fastboot && S.tools.adb ? '#0a84ff' : '#ff453a', P.bolt)}<div class="txt"><b>platform-tools</b><small>${S.tools.fastboot && S.tools.adb ? t('toolsOk') : t('toolsNo')}</small></div></div>
+        <div class="row" id="r-dev">${ico(d ? '#34c759' : '#8e8e93', P.phone)}<div class="txt"><b>${d ? 'Redmi Note 9S' : t('noDevice')}</b><small>${d ? `${t('connected')} · ${modeText(d.mode)} · ${d.id}` : t('noDeviceSub')}</small></div><span class="badge ${d ? 'ok' : ''}">${d ? modeText(d.mode) : '–'}</span></div>
+        <div class="row" id="r-tools">${ico(S.tools.fastboot && S.tools.adb ? '#0a84ff' : '#ff453a', P.bolt)}<div class="txt"><b>platform-tools</b><small>${S.tools.fastboot && S.tools.adb ? t('toolsOk') : t('toolsNo')}</small></div></div>
       </div>
       <div class="group"><div class="btns"><button class="btn" data-go="flash">${t('quickFlash')}</button><button class="btn sec" data-go="learn">${t('quickLearn')}</button>
         <button class="btn sec" id="rb-bl" ${d ? '' : 'disabled'}>${t('rebootBoot')}</button><button class="btn sec" id="rb-sys" ${d ? '' : 'disabled'}>${t('rebootSys')}</button></div></div>`;
@@ -105,18 +105,43 @@
         <div class="row tap" id="pick-ipsw">${ico('#0a84ff', P.file)}<div class="txt"><b>${t('chooseIpsw')}</b><small>${S.ipsw ? S.ipsw.split(/[\\/]/).pop() : '—'}</small></div>
           ${ii ? `<span class="badge ${ii.ok && ii.supported ? 'ok' : 'bad'}">${ii.ok ? (ii.supported ? t('ipswOk') : t('ipswBad')) : t('ipswUnreadable')}</span>` : ''}</div>
         ${ii && ii.ok ? `<div class="row"><div class="txt"><b>iOS ${ii.version} (${ii.build})</b><small>${ii.types.join(', ')}</small></div></div>` : ''}
-        ${win ? `<div class="row"><div class="txt"><small>${t('winNote')}</small></div></div>` : `<div class="btns"><button class="btn sec" id="do-build" ${S.ipsw ? '' : 'disabled'}>${t('build')}</button></div>
-        <div class="row" id="cmdrow" style="display:none"><div class="txt"><small>${t('buildHint')}</small><code id="cmd" style="user-select:text;word-break:break-all"></code></div></div>`}
+        ${win ? `<div class="row"><div class="txt"><small>${t('winNote')}</small></div></div>` : `<div class="btns"><button class="btn" id="do-build" ${S.ipsw && ii && ii.ok && !S.building ? '' : 'disabled'}>${S.building ? t('building') : t('patchBuild')}</button></div>
+        ${S.building ? `<div class="row"><div class="txt"><small>${t('buildWait')}</small></div></div>` : ''}`}
         <div class="row tap" id="pick-simg">${ico('#ff9f0a', P.file)}<div class="txt"><b>${t('chooseSimg')}</b><small>${S.simg ? S.simg.split(/[\\/]/).pop() : '—'}</small></div></div>
         <div class="btns"><button class="btn danger" id="do-ios" ${fb && S.simg ? '' : 'disabled'}>${t('flashIos')}</button></div></div>
       <div class="group-title">${t('logTitle')}</div><div class="group"><div class="bar"><i style="width:${S.progress}%"></i></div><div style="padding:10px 14px"><div class="log" id="log">${S.log.join('\n')}</div></div></div>`;
   }
 
   function pageLearn() {
-    const steps = t('steps'), i = S.step, st = steps[i];
     return `<h1>${t('learnTitle')}</h1><p class="sub">${t('learnSub')}</p><div class="hero"><canvas id="mit" width="352" height="368"></canvas></div>
-      <div class="bubble"><b>${st[0]}</b>${st[1]}</div><div class="dots">${steps.map((_, k) => `<i class="${k === i ? 'on' : ''}"></i>`).join('')}</div>
-      <div class="group"><div class="btns"><button class="btn" id="st-next">${i === steps.length - 1 ? t('finish') : t('next')}</button><button class="btn sec" id="st-back" ${i === 0 ? 'disabled' : ''}>${t('back')}</button></div></div>`;
+      <div class="group"><div class="btns"><button class="btn" id="st-start">${t('startGuide')}</button></div></div>`;
+  }
+
+  // ---------- guide: Mitlk flies to the control, the control pulses ----------
+  const GUIDE = [
+    { tab: 'home', sel: null }, { tab: 'home', sel: '#r-tools' }, { tab: 'home', sel: null }, { tab: 'home', sel: '#r-dev' },
+    { tab: 'home', sel: '#r-dev' }, { tab: 'flash', sel: '#do-uefi' }, { tab: 'flash', sel: '#pick-ipsw' }, { tab: 'home', sel: '#tabbar [data-tab=home]' },
+  ];
+  function guideApply() {
+    document.querySelectorAll('.hint').forEach((e) => e.classList.remove('hint'));
+    let g = $('#guide'); if (g) g.remove();
+    if (!S.guide) { window.Pet && window.Pet.hide(); return; }
+    const cfg = GUIDE[S.step], steps = t('steps'), st = steps[S.step];
+    const target = cfg.sel ? document.querySelector(cfg.sel) : null;
+    if (target) target.classList.add('hint');
+    g = document.createElement('div'); g.id = 'guide'; g.className = 'guide';
+    g.innerHTML = `<b>${st[0]}</b>${st[1]}<div class="dots">${steps.map((_, k) => `<i class="${k === S.step ? 'on' : ''}"></i>`).join('')}</div>
+      <div class="gbtn"><button class="btn sec" id="g-back" ${S.step === 0 ? 'disabled' : ''}>${t('back')}</button><button class="btn" id="g-next">${S.step === steps.length - 1 ? t('finish') : t('next')}</button><button class="btn sec" id="g-x">×</button></div>`;
+    document.body.appendChild(g);
+    $('#g-next').onclick = () => guideGo(S.step + 1); $('#g-back').onclick = () => guideGo(S.step - 1); $('#g-x').onclick = () => { S.guide = false; guideApply(); };
+    window.Pet.show(); requestAnimationFrame(() => window.Pet.flyTo(target));
+  }
+  function guideGo(i) {
+    const n = GUIDE.length;
+    if (i >= n) { S.guide = false; S.step = 0; guideApply(); return; }
+    S.step = Math.max(0, i);
+    const cfg = GUIDE[S.step];
+    if (cfg.tab !== S.tab) { S.tab = cfg.tab; render(); } else guideApply();
   }
 
   function pageSettings() {
@@ -140,6 +165,7 @@
     document.querySelectorAll('[data-i]').forEach((e) => { e.textContent = t(e.dataset.i); });
     document.querySelectorAll('#tabbar button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.tab));
     bind();
+    if (S.guide) guideApply();
   }
 
   function bind() {
@@ -155,10 +181,16 @@
     on('#pick-ipsw', async () => { const f = await window.fi.pick('ipsw'); if (f) { S.ipsw = f; S.ipswInfo = await window.fi.inspectIpsw(f); render(); } });
     on('#pick-simg', async () => { const f = await window.fi.pick('simg'); if (f) { S.simg = f; render(); } });
     on('#do-build', async () => {
-      const r = await window.fi.buildCommand(S.ipsw, ''); if (!r.ok) return;
-      $('#cmdrow').style.display = ''; $('#cmd').textContent = r.cmd;
-      const b = document.createElement('button'); b.className = 'btn sec'; b.textContent = t('openTerm'); b.style.marginTop = '8px';
-      b.onclick = () => window.fi.openTerminal(r.cmd.replace('<ios-miatoll>', '$HOME/ios-miatoll')); $('#cmdrow .txt').appendChild(b);
+      const r = await window.fi.buildCommand(S.ipsw, ''); if (!r.ok) { addLog('build: ' + r.reason); return; }
+      S.building = true; S.expect = r.simg; render();
+      window.fi.openTerminal(r.cmd);
+      island(t('building'), S.ipsw.split(/[\\/]/).pop(), { stay: true });
+      const wait = async () => {
+        const size = await window.fi.exists(S.expect);
+        if (size > 1e8) { S.simg = S.expect; S.building = false; island(t('rootReady'), '', {}); render(); return; }
+        if (S.building) setTimeout(wait, 4000);
+      };
+      wait();
     });
     on('#do-backup', async () => {
       if (!S.device || !['recovery', 'android'].includes(S.device.mode)) { addLog(t('needRecovery')); return; }
@@ -173,8 +205,7 @@
       if (!(await confirmBox('ERASE', t('iosSub')))) return;
       run(t('flashing'), () => window.fi.flash('userdata', S.simg));
     });
-    on('#st-next', () => { const n = t('steps').length; if (S.step < n - 1) S.step++; else { S.step = 0; S.tab = 'home'; } render(); });
-    on('#st-back', () => { if (S.step > 0) S.step--; render(); });
+    on('#st-start', () => { S.guide = true; S.step = 0; guideGo(0); });
     const mit = $('#mit'); if (mit) window.Mitlk.animate(mit, {});
   }
 

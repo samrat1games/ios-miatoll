@@ -549,8 +549,6 @@ static int mit_px(int x, int y)
 		return 1;
 	if (((x >= 8 && x <= 11) || (x >= 32 && x <= 35)) && y >= 28 && y <= 38)	/* arms */
 		return 1;
-	if (in_ell(x, y, 20, 77, 8, 4) || in_ell(x, y, 68, 77, 8, 4))
-		return 1;
 	return 0;
 }
 
