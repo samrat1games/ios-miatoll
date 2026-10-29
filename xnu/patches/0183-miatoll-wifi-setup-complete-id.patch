@@ -1,0 +1,30 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3364,8 +3364,10 @@ wl_htc_connect(uint16_t service, uint16_t flags)
+ static int
+ wl_htc_start(void)
+ {
+-	uint8_t m[14] = {0};
+-	m[0] = 6;
++	/* 0183: ATH10K_HTC_MSG_SETUP_COMPLETE_EX_ID is 5 (6 is SEND_SUSPEND_COMPLETE, 4 the plain SETUP_COMPLETE); the message is
++	 * id (2), pad (2), flags (4), max bundled receives and padding (4) */
++	uint8_t m[12] = {0};
++	m[0] = 5;
+ 	return wl_htc_ctrl_send(m, sizeof(m));
+ }
+ 
+@@ -3497,10 +3499,10 @@ wl_ce_start(void)
+ 			    wl_r(WL_CE(i) + WL_CE_CUR_DRRI) & 0xffff, *(volatile uint32_t *)(wl.mem + 4 * i) & 0xffff, wl.ce[i].src_wr,
+ 			    wl.ce[i].dst_sw);
+ 		}
+-		uint8_t m5[6] = {0};
+-		m5[0] = 5;
++		uint8_t m5[2] = {0};
++		m5[0] = 4;                              /* 0183: the plain SETUP_COMPLETE */
+ 		err = wl_htc_ctrl_send(m5, sizeof(m5));
+-		printf("SWEET WLCE: SETUP_COMPLETE (5) sent (%d), waiting 4 s more\n", err);
++		printf("SWEET WLCE: SETUP_COMPLETE (4) sent (%d), waiting 4 s more\n", err);
+ 		for (unsigned ms = 0; ms < 4000 && !wl_frames; ms += 10) {
+ 			wl_ce_poll();
+ 			tftp_work();
