@@ -1,0 +1,20 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2861,6 +2861,16 @@ wl_ce_poll(void)
+ 			struct wl_desc *d = &wl.ce[i].dst[s];
+ 			wl_sync((vm_offset_t)d, wl.ce[i].dst_pa + s * sizeof(*d), sizeof(*d));
+ 			uint16_t n = d->nbytes;
++			if (!n && s != (wl_r(WL_CE(i) + WL_CE_CUR_DRRI) & (WL_RXN - 1))) {
++				/* the engine consumed this slot (hardware read index moved) but the descriptor write-back
++				 * is not visible: take the buffer anyway and show what the descriptor holds */
++				static unsigned odd;
++				if (odd++ < 4) {
++					printf("SWEET WLCE: CE%u slot %u done by hardware, descriptor nbytes 0: addr %#llx flags %#x hash %#x\n",
++					    i, s, (unsigned long long)d->addr, d->flags, d->hash);
++				}
++				n = 64;
++			}
+ 			if (!n) {
+ 				break;
+ 			}

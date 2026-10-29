@@ -1,0 +1,45 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -582,6 +582,7 @@ tspi_read(uint8_t cmd, uint8_t *data, unsigned len)
+ 	if (!len || len > TSPI_MAXRD) {
+ 		return EINVAL;
+ 	}
++	unsigned why = 0;
+ 	for (unsigned t = 0; t < 3; ++t) {
+ 		memset(tx, 0, sizeof(tx));
+ 		tx[0] = cmd;
+@@ -591,16 +592,22 @@ tspi_read(uint8_t cmd, uint8_t *data, unsigned len)
+ 		tspi_xfer(tx, rx, total);
+ 		delay(150);
+ 		if (rx[3] & 0xa0u) {
++			why = 0x100u | rx[3];
+ 			continue;       /* status not ready */
+ 		}
+ 		const uint8_t *d = rx + TSPI_HDR + TSPI_DUMMY;
+ 		uint16_t want = (uint16_t)(d[len] | ((unsigned)d[len + 1] << 8));
+ 		if (tspi_crc(d, len) != want) {
++			why = 0x200u;
+ 			continue;
+ 		}
+ 		memcpy(data, d, len);
+ 		return 0;
+ 	}
++	static unsigned seen;
++	if ((seen++ % 500u) == 0) {
++		printf("SWEET TOUCH: FTS read cmd %#x failed (why %#x)\n", cmd, why);
++	}
+ 	return EIO;
+ }
+ 
+@@ -622,6 +629,10 @@ tspi_touch(void)
+ 		return err;
+ 	}
+ 	if ((d[0] & 0xf0u) != 0x90u) {
++		static unsigned hdr_seen;
++		if ((hdr_seen++ % 500u) == 0) {
++			printf("SWEET TOUCH: FTS bad report header %02x %02x %02x %02x %02x %02x\n", d[0], d[1], d[2], d[3], d[4], d[5]);
++		}
+ 		return EIO;
+ 	}
+ 	unsigned n = d[1] & 15u;
