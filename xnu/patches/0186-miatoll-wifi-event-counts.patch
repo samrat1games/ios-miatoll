@@ -1,0 +1,43 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2998,6 +2998,7 @@ struct wl_bss {
+ };
+ static struct wl_bss wl_bss[48];
+ static volatile unsigned wl_nbss;
++static uint32_t wl_ev_id[24], wl_ev_cnt[24];
+ 
+ static uint8_t *
+ wl_tlv(uint8_t *p, uint16_t tag, uint16_t len)
+@@ -3082,6 +3083,21 @@ wl_wmi_rx(const uint8_t *d, unsigned n)
+ 	id &= 0xffffffu;
+ 	d += 4;
+ 	n -= 4;
++	{
++		/* 0186: how many events of each kind came (the log below only shows the first ones) */
++		unsigned k;
++		for (k = 0; k < 24 && wl_ev_id[k] && wl_ev_id[k] != id; ++k) {
++		}
++		if (k < 24) {
++			wl_ev_id[k] = id;
++			wl_ev_cnt[k]++;
++		}
++	}
++	static unsigned mgmt_logged;
++	if (id == WMI_EV_MGMT_RX && mgmt_logged++ < 6) {
++		printf("SWEET WMI: mgmt rx, %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x\n", n, d[0], d[1],
++		    d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15]);
++	}
+ 	static unsigned logged;
+ 	if (logged++ < 60) {
+ 		printf("SWEET WMI: event %#x, %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n", id, n, n > 0 ? d[0] : 0,
+@@ -3365,6 +3381,9 @@ wl_wmi_bringup(void)
+ 		wl_wmi_scan();
+ 		wl_wmi_wait(15000, &wl_scan_done);
+ 	}
++	for (unsigned k = 0; k < 24 && wl_ev_id[k]; ++k) {
++		printf("SWEET WMI: events %#x: %u\n", wl_ev_id[k], wl_ev_cnt[k]);
++	}
+ 	printf("SWEET WMI: scan %s, %u access points\n", wl_scan_done ? "complete" : "did not complete", wl_nbss);
+ 	wl_write_networks();
+ 	return 0;
