@@ -1,0 +1,36 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1,13 +1,20 @@
++static vm_offset_t wl_reg_sh;
++
++/* only the copy-engine block (0x240000..0x24d000) and the shadow page (0x32000) are touched: two small maps
++ * instead of the whole 8 MiB, which kernel_map can no longer give once the GPU has fragmented it */
++static inline vm_offset_t
++wl_va(uint32_t off)
++{
++	return off >= 0x240000u ? wl.reg + (off - 0x240000u) : wl_reg_sh + (off - 0x32000u);
++}
++
+ static inline uint32_t
+ wl_r(uint32_t off)
+ {
+-	return *(volatile uint32_t *)(wl.reg + off);
++	return *(volatile uint32_t *)wl_va(off);
+ }
+ 
+ static inline void
+ wl_w(uint32_t off, uint32_t v)
+ {
+-	*(volatile uint32_t *)(wl.reg + off) = v;
++	*(volatile uint32_t *)wl_va(off) = v;
+ 	__asm__ volatile("dsb sy" : : : "memory");
+ }
+@@ -20,4 +20,5 @@
+-	wl.reg = ml_io_map(WL_MEM_PA, WL_MEM_SZ);
+-	if (!wl.reg) {
++	wl.reg = ml_io_map(WL_MEM_PA + 0x240000u, 0xd000u);
++	wl_reg_sh = ml_io_map(WL_MEM_PA + 0x32000u, 0x1000u);
++	if (!wl.reg || !wl_reg_sh) {
+ 		return ENOMEM;
+ 	}
