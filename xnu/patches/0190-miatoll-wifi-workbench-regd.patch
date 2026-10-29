@@ -5,7 +5,7 @@ diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
  static volatile unsigned wl_nbss;
  static volatile int wl_full_reorder;
  static volatile int wl_never;
-+static uint32_t wl_dwell_act = 0x50, wl_dwell_pas = 0x150;
++static uint32_t wl_dwell_act = 0x32, wl_dwell_pas = 0x96;     /* 50 and 150 ms */
  static uint32_t wl_arg_pdev, wl_arg_reorder;     /* 0189: boot-args wlpdev=1, wlreorder=1 switch on what 0187 added (the firmware went silent with both) */
  static uint32_t wl_ev_id[24], wl_ev_cnt[24];
  
