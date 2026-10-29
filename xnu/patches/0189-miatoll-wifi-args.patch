@@ -1,0 +1,31 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3000,6 +3000,7 @@ static struct wl_bss wl_bss[48];
+ static volatile unsigned wl_nbss;
+ static volatile int wl_full_reorder;
+ static volatile int wl_never;
++static uint32_t wl_arg_pdev, wl_arg_reorder;     /* 0189: boot-args wlpdev=1, wlreorder=1 switch on what 0187 added (the firmware went silent with both) */
+ static uint32_t wl_ev_id[24], wl_ev_cnt[24];
+ 
+ static uint8_t *
+@@ -3245,7 +3246,8 @@ wl_wmi_init(void)
+ 	memcpy(p, abi, sizeof(abi));
+ 	p += sizeof(abi);
+ 	uint32_t c[44] = {0};
+-	c[0] = 4; c[1] = 33; c[2] = wl_full_reorder ? 4 : 0; c[3] = wl_full_reorder ? 4 : 0; c[4] = 2; c[5] = 66; c[6] = 16; c[7] = 7; c[8] = 7;
++	(void)PE_parse_boot_argn("wlreorder", &wl_arg_reorder, sizeof(wl_arg_reorder));
++	c[0] = 4; c[1] = 33; c[2] = (wl_full_reorder && wl_arg_reorder) ? 4 : 0; c[3] = (wl_full_reorder && wl_arg_reorder) ? 4 : 0; c[4] = 2; c[5] = 66; c[6] = 16; c[7] = 7; c[8] = 7;
+ 	c[9] = 0x64; c[10] = 0x64; c[11] = 0x64; c[12] = 0x28; c[13] = 1;
+ 	c[14] = 4; c[15] = 4; c[16] = 4; c[17] = 8;
+ 	c[21] = 0x400; c[22] = 2; c[27] = 2; c[28] = 1056; c[29] = 2; c[30] = 1; c[31] = 0x20; c[32] = 2; c[33] = 5;
+@@ -3535,7 +3537,8 @@ wl_wmi_bringup(void)
+ 	{
+ 		/* 0187: the pdev parameters ath10k_start sets (pmf qos, dynamic bw, idle ps, arp ac override, ani) */
+ 		static const uint32_t pp[5][2] = {{34, 1}, {10, 1}, {44, 1}, {35, 0}, {37, 1}};
+-		for (unsigned i = 0; i < 5; ++i) {
++		(void)PE_parse_boot_argn("wlpdev", &wl_arg_pdev, sizeof(wl_arg_pdev));
++		for (unsigned i = 0; i < 5 && wl_arg_pdev; ++i) {
+ 			uint8_t b[16];
+ 			uint8_t *q = wl_tlv(b, 82, 8);          /* WMI_TLV_TAG_STRUCT_PDEV_SET_PARAM_CMD */
+ 			memcpy(q, pp[i], 8);
