@@ -1,0 +1,412 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2752,6 +2752,9 @@ static const struct { uint16_t src_n, src_max; uint8_t rx; } wl_ce_cfg[WL_CE_NUM
+ };
+ 
+ static volatile int wl_htc_ready;
++static volatile int wl_wmi_eid = -1;                   /* 0180: endpoint and credits of the WMI service */
++static volatile int wl_wmi_credits;
++static volatile uint32_t wl_total_credits;
+ static volatile int wl_conn_status = -1;         /* 0178: HTC connect-service response: status, endpoint */
+ static volatile int wl_conn_eid = -1;
+ static volatile int wl_conn_service;
+@@ -2824,6 +2827,9 @@ wl_alloc(vm_size_t size, vm_offset_t *va, uint64_t *pa)
+ }
+ 
+ /* one HTC message from a receive ring (ath10k_htc_rx_completion_handler, control endpoint only for now) */
++static void wl_htc_trailer(const uint8_t *t, unsigned len);
++static void wl_wmi_rx(const uint8_t *d, unsigned n);
++
+ static void
+ wl_htc_rx(unsigned ce, const uint8_t *b, uint32_t n)
+ {
+@@ -2835,6 +2841,20 @@ wl_htc_rx(unsigned ce, const uint8_t *b, uint32_t n)
+ 	if (n < 10) {
+ 		return;
+ 	}
++	{
++		/* 0180: credit reports in the trailer; WMI events of the WMI endpoint */
++		uint16_t plen;
++		memcpy(&plen, b + 2, 2);
++		unsigned tl = b[4];
++		if (8u + plen <= n && tl <= plen) {
++			if (tl) {
++				wl_htc_trailer(b + 8 + plen - tl, tl);
++			}
++			if (b[0] != 0 && (int)b[0] == wl_wmi_eid) {
++				wl_wmi_rx(b + 8, plen - tl);
++			}
++		}
++	}
+ 	uint16_t len, msg;
+ 	memcpy(&len, b + 2, 2);
+ 	memcpy(&msg, b + 8, 2);
+@@ -2843,6 +2863,7 @@ wl_htc_rx(unsigned ce, const uint8_t *b, uint32_t n)
+ 		memcpy(&credits, b + 10, 2);
+ 		memcpy(&csize, b + 12, 2);
+ 		printf("SWEET WLCE: HTC READY: %u credits of %u bytes, %u endpoints\n", credits, csize, b[14]);
++		wl_total_credits = credits;
+ 		wl_htc_ready = 1;
+ 	}
+ 	if (wl_conn_status == 0) {
+@@ -2936,6 +2957,336 @@ wl_ce_send(unsigned i, uint64_t pa, uint16_t n, uint16_t transfer_id)
+ 	return 0;
+ }
+ 
++/*
++ * 0180: WMI over HTC, after ath10k's wmi-tlv.c (ISC licence): service ready -> init -> ready -> vdev create -> start scan ->
++ * beacons and probe responses (mgmt rx). The scan result is only logged ("SWEET WIFI: ..."), nothing is handed to iOS yet.
++ * Events are only noted in wl_wmi_rx() (called from the receive poll); the commands are sent from wl_ce_start's own thread.
++ */
++#define WMI_TAG_ARRAY_UINT32            16
++#define WMI_TAG_ARRAY_BYTE              17
++#define WMI_TAG_ARRAY_STRUCT            18
++#define WMI_TAG_ARRAY_FIXED_STRUCT      19
++#define WMI_TAG_SERVICE_READY           32
++#define WMI_TAG_READY                   35
++#define WMI_TAG_MGMT_RX_HDR             44
++#define WMI_TAG_INIT_CMD                74
++#define WMI_TAG_RESOURCE_CONFIG         75
++#define WMI_TAG_START_SCAN_CMD          77
++#define WMI_TAG_VDEV_CREATE_CMD         86
++#define WMI_CMD_INIT                    0x1u
++#define WMI_CMD_START_SCAN              0x3001u
++#define WMI_CMD_VDEV_CREATE             0x5001u
++#define WMI_EV_SERVICE_READY            0x1u
++#define WMI_EV_READY                    0x2u
++#define WMI_EV_SCAN                     0x3001u
++#define WMI_EV_MGMT_RX                  0x7001u
++
++static volatile int wl_svc_ready, wl_wmi_ready, wl_scan_done, wl_scan_started;
++static volatile uint32_t wl_num_mem_reqs;
++static uint8_t wl_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x99, 0x01};
++static vm_offset_t wl_wtx;
++static uint64_t wl_wtx_pa;
++static uint8_t wl_wseq;
++
++struct wl_bss {
++	uint8_t bssid[6];
++	uint8_t ssid_len;
++	char ssid[33];
++	uint8_t channel;
++	int8_t snr;
++};
++static struct wl_bss wl_bss[48];
++static volatile unsigned wl_nbss;
++
++static uint8_t *
++wl_tlv(uint8_t *p, uint16_t tag, uint16_t len)
++{
++	uint32_t h = (uint32_t)len | ((uint32_t)tag << 16);
++	memcpy(p, &h, 4);
++	return p + 4;
++}
++
++/* the credit reports at the end of a received HTC frame (ath10k_htc_process_trailer: record 1 = credit report, pairs of endpoint, credits) */
++static void
++wl_htc_trailer(const uint8_t *t, unsigned len)
++{
++	while (len >= 2) {
++		unsigned id = t[0], l = t[1];
++		if (l + 2 > len) {
++			break;
++		}
++		if (id == 1) {
++			for (unsigned k = 0; k + 2 <= l; k += 2) {
++				if ((int)t[2 + k] == wl_wmi_eid) {
++					wl_wmi_credits += t[3 + k];
++				}
++			}
++		}
++		t += 2 + l;
++		len -= 2 + l;
++	}
++}
++
++/* a beacon or probe response: SSID (IE 0) and channel (IE 3, else the receive channel) */
++static void
++wl_wifi_frame(const uint8_t *f, unsigned n, uint32_t rx_channel, int snr)
++{
++	if (n < 36 || (f[0] & 0x0c) != 0 || ((f[0] >> 4) != 8 && (f[0] >> 4) != 5)) {
++		return;
++	}
++	const uint8_t *bssid = f + 16;
++	unsigned i;
++	for (i = 0; i < wl_nbss; ++i) {
++		if (memcmp(wl_bss[i].bssid, bssid, 6) == 0) {
++			return;
++		}
++	}
++	if (i >= sizeof(wl_bss) / sizeof(wl_bss[0])) {
++		return;
++	}
++	struct wl_bss *b = &wl_bss[i];
++	memcpy(b->bssid, bssid, 6);
++	b->ssid_len = 0;
++	b->ssid[0] = 0;
++	b->channel = (uint8_t)rx_channel;
++	b->snr = (int8_t)snr;
++	for (unsigned o = 36; o + 2 <= n;) {
++		unsigned id = f[o], l = f[o + 1];
++		if (o + 2 + l > n) {
++			break;
++		}
++		if (id == 0 && l <= 32) {
++			memcpy(b->ssid, f + o + 2, l);
++			b->ssid[l] = 0;
++			b->ssid_len = (uint8_t)l;
++		} else if (id == 3 && l == 1) {
++			b->channel = f[o + 2];
++		}
++		o += 2 + l;
++	}
++	wl_nbss = i + 1;
++	printf("SWEET WIFI: '%s' %02x:%02x:%02x:%02x:%02x:%02x ch %u snr %d\n", b->ssid_len ? b->ssid : "(hidden)", bssid[0], bssid[1],
++	    bssid[2], bssid[3], bssid[4], bssid[5], b->channel, b->snr);
++}
++
++/* an event of the WMI endpoint: [cmd_id u32] then TLVs */
++static void
++wl_wmi_rx(const uint8_t *d, unsigned n)
++{
++	if (n < 4) {
++		return;
++	}
++	uint32_t id;
++	memcpy(&id, d, 4);
++	id &= 0xffffffu;
++	d += 4;
++	n -= 4;
++	static unsigned logged;
++	if (logged++ < 60) {
++		printf("SWEET WMI: event %#x, %u bytes\n", id, n);
++	}
++	if (id == WMI_EV_SERVICE_READY || id == WMI_EV_READY || id == WMI_EV_SCAN) {
++		/* first TLV: the event structure */
++		uint32_t h;
++		if (n >= 4) {
++			memcpy(&h, d, 4);
++			unsigned len = h & 0xffff;
++			if (4 + len <= n) {
++				const uint8_t *v = d + 4;
++				if (id == WMI_EV_SERVICE_READY && len >= 76) {
++					uint32_t fw, nm;
++					memcpy(&fw, v, 4);
++					memcpy(&nm, v + 72, 4);
++					wl_num_mem_reqs = nm;
++					printf("SWEET WMI: service ready, firmware build %#x, %u host memory requests\n", fw, nm);
++					wl_svc_ready = 1;
++				} else if (id == WMI_EV_READY && len >= 36) {
++					uint32_t st;
++					memcpy(&st, v + 32, 4);
++					memcpy(wl_mac, v + 24, 6);
++					printf("SWEET WMI: ready, status %u, mac %02x:%02x:%02x:%02x:%02x:%02x\n", st, wl_mac[0], wl_mac[1], wl_mac[2],
++					    wl_mac[3], wl_mac[4], wl_mac[5]);
++					wl_wmi_ready = 1;
++				} else if (id == WMI_EV_SCAN && len >= 24) {
++					uint32_t ty, rs;
++					memcpy(&ty, v, 4);
++					memcpy(&rs, v + 4, 4);
++					printf("SWEET WMI: scan event %#x reason %u\n", ty, rs);
++					if (ty & 1) {
++						wl_scan_started = 1;
++					}
++					if (ty & 2) {
++						wl_scan_done = 1;
++					}
++				}
++			}
++		}
++		return;
++	}
++	if (id == WMI_EV_MGMT_RX) {
++		const uint8_t *hdr = NULL, *frame = NULL;
++		unsigned frame_len = 0;
++		for (unsigned o = 0; o + 4 <= n;) {
++			uint32_t h;
++			memcpy(&h, d + o, 4);
++			unsigned len = h & 0xffff, tag = h >> 16;
++			if (o + 4 + len > n) {
++				break;
++			}
++			if (tag == WMI_TAG_MGMT_RX_HDR) {
++				hdr = d + o + 4;
++			} else if (tag == WMI_TAG_ARRAY_BYTE) {
++				frame = d + o + 4;
++				frame_len = len;
++			}
++			o += 4 + len;
++		}
++		if (hdr && frame) {
++			uint32_t ch, snr, buf_len;
++			memcpy(&ch, hdr, 4);
++			memcpy(&snr, hdr + 4, 4);
++			memcpy(&buf_len, hdr + 16, 4);
++			wl_wifi_frame(frame, buf_len < frame_len ? buf_len : frame_len, ch, (int)snr);
++		}
++	}
++}
++
++static int
++wl_wmi_send(uint32_t cmd, const uint8_t *body, unsigned blen)
++{
++	if (!wl_wtx && wl_alloc(0x1000, &wl_wtx, &wl_wtx_pa)) {
++		return ENOMEM;
++	}
++	for (unsigned ms = 0; ms < 2000 && wl_wmi_credits <= 0; ms += 10) {
++		wl_ce_poll();
++		touch_wait(10);
++	}
++	if (wl_wmi_credits <= 0) {
++		printf("SWEET WMI: no HTC credits for command %#x\n", cmd);
++	}
++	uint8_t *p = (uint8_t *)wl_wtx;
++	unsigned plen = 4 + blen;
++	memset(p, 0, 8 + plen);
++	p[0] = (uint8_t)wl_wmi_eid;
++	p[1] = 1;                               /* ATH10K_HTC_FLAG_NEED_CREDIT_UPDATE */
++	p[2] = (uint8_t)plen;
++	p[3] = (uint8_t)(plen >> 8);
++	p[5] = wl_wseq++;
++	memcpy(p + 8, &cmd, 4);
++	memcpy(p + 12, body, blen);
++	wl_sync(wl_wtx, wl_wtx_pa, 8 + plen);
++	wl_wmi_credits--;
++	int err = wl_ce_send(3, wl_wtx_pa, (uint16_t)(8 + plen), 0);
++	printf("SWEET WMI: command %#x, %u bytes, sent %d\n", cmd, blen, err);
++	return err;
++}
++
++static int
++wl_wmi_init(void)
++{
++	uint8_t b[256];
++	uint8_t *p = b;
++	uint32_t abi[7] = {0x01000000u, 53u, 0x5F414351u, 0x4C4Du, 0, 0, 0};
++	p = wl_tlv(p, WMI_TAG_INIT_CMD, sizeof(abi));
++	memcpy(p, abi, sizeof(abi));
++	p += sizeof(abi);
++	uint32_t c[44] = {0};
++	c[0] = 4; c[1] = 33; c[4] = 2; c[5] = 66; c[6] = 16; c[7] = 7; c[8] = 7;
++	c[9] = 0x64; c[10] = 0x64; c[11] = 0x64; c[12] = 0x28; c[13] = 1;
++	c[14] = 4; c[15] = 4; c[16] = 4; c[17] = 8;
++	c[21] = 0x400; c[22] = 2; c[27] = 2; c[28] = 1056; c[29] = 2; c[30] = 1; c[31] = 0x20; c[32] = 2; c[33] = 5;
++	c[35] = 6; c[37] = 1; c[38] = 1; c[43] = 1u << 9;
++	p = wl_tlv(p, WMI_TAG_RESOURCE_CONFIG, sizeof(c));
++	memcpy(p, c, sizeof(c));
++	p += sizeof(c);
++	p = wl_tlv(p, WMI_TAG_ARRAY_STRUCT, 0);
++	return wl_wmi_send(WMI_CMD_INIT, b, (unsigned)(p - b));
++}
++
++static int
++wl_wmi_vdev_create(void)
++{
++	uint8_t b[64];
++	uint8_t *p = wl_tlv(b, WMI_TAG_VDEV_CREATE_CMD, 20);
++	uint32_t v[3] = {0, 2, 0};             /* vdev 0, station, no subtype */
++	memcpy(p, v, 12);
++	p += 12;
++	memset(p, 0, 8);
++	memcpy(p, wl_mac, 6);
++	p += 8;
++	return wl_wmi_send(WMI_CMD_VDEV_CREATE, b, (unsigned)(p - b));
++}
++
++static int
++wl_wmi_scan(void)
++{
++	uint8_t b[256];
++	uint32_t s[25] = {0};
++	s[0] = 0xA000u;                         /* scan id */
++	s[1] = 0xA001u;                         /* requestor */
++	s[2] = 0;                               /* vdev */
++	s[3] = 1;                               /* priority low */
++	s[4] = 0x1f;                            /* started, completed, bss channel, foreign channel, dequeued */
++	s[5] = 50; s[6] = 150; s[7] = 50; s[8] = 500;
++	s[12] = 20000; s[13] = 5;
++	s[14] = 0x3e;                           /* bcast probe req, cck, ofdm, chan stat; filter bit inverted as ath10k does */
++	s[16] = 0;                              /* channels: all */
++	s[17] = 1;                              /* one bssid: broadcast */
++	s[18] = 0;                              /* ssids */
++	s[19] = 0;                              /* ie length */
++	s[20] = 3;                              /* probes */
++	uint8_t *p = wl_tlv(b, WMI_TAG_START_SCAN_CMD, 100);
++	memcpy(p, s, 100);
++	p += 100;
++	p = wl_tlv(p, WMI_TAG_ARRAY_UINT32, 0);
++	p = wl_tlv(p, WMI_TAG_ARRAY_FIXED_STRUCT, 0);
++	p = wl_tlv(p, WMI_TAG_ARRAY_FIXED_STRUCT, 8);
++	memset(p, 0xff, 6);
++	p[6] = p[7] = 0;
++	p += 8;
++	p = wl_tlv(p, WMI_TAG_ARRAY_BYTE, 0);
++	return wl_wmi_send(WMI_CMD_START_SCAN, b, (unsigned)(p - b));
++}
++
++static void
++wl_wmi_wait(unsigned ms_total, volatile int *flag)
++{
++	for (unsigned ms = 0; ms < ms_total && !*flag; ms += 10) {
++		wl_ce_poll();
++		tftp_work();
++		touch_wait(10);
++	}
++}
++
++/* the whole WMI bring-up after HTC setup complete; every step says what it did */
++static int
++wl_wmi_bringup(void)
++{
++	wl_wmi_wait(4000, &wl_svc_ready);
++	if (!wl_svc_ready) {
++		printf("SWEET WMI: no service ready event\n");
++		return ETIMEDOUT;
++	}
++	if (wl_num_mem_reqs) {
++		printf("SWEET WMI: the firmware asks for %u host memory chunks; none are given (not written yet)\n", wl_num_mem_reqs);
++	}
++	wl_wmi_init();
++	wl_wmi_wait(5000, &wl_wmi_ready);
++	if (!wl_wmi_ready) {
++		printf("SWEET WMI: no ready event after init\n");
++		return ETIMEDOUT;
++	}
++	wl_wmi_vdev_create();
++	for (unsigned ms = 0; ms < 500; ms += 10) {
++		wl_ce_poll();
++		touch_wait(10);
++	}
++	wl_wmi_scan();
++	wl_wmi_wait(15000, &wl_scan_done);
++	printf("SWEET WMI: scan %s, %u access points\n", wl_scan_done ? "complete" : "did not complete", wl_nbss);
++	return 0;
++}
++
+ /* 0178: HTC control messages (ath10k_htc_connect_service, ath10k_htc_start) on the control endpoint: pipe 0 up, pipe 2 down */
+ static vm_offset_t wl_tx;
+ static uint64_t wl_tx_pa;
+@@ -3091,11 +3442,13 @@ wl_ce_start(void)
+ 		    wl_r(WL_CE(2) + WL_CE_CUR_DRRI));
+ 		return ETIMEDOUT;
+ 	}
+-	int err = wl_htc_connect(0x100, 0);             /* WMI control */
++	int err = wl_htc_connect(0x100, (uint16_t)(wl_total_credits << 8));   /* WMI control, all credits (ath10k_htc_get_credit_allocation) */
+ 	if (err) {
+ 		printf("SWEET WLCE: connect WMI service failed %d\n", err);
+ 		return err;
+ 	}
++	wl_wmi_eid = wl_conn_eid;
++	wl_wmi_credits = (int)wl_total_credits;
+ 	err = wl_htc_start();
+ 	printf("SWEET WLCE: HTC setup complete sent (%d), waiting 4 s for WMI events\n", err);
+ 	wl_frames = 0;
+@@ -3123,6 +3476,7 @@ wl_ce_start(void)
+ 		}
+ 		printf("SWEET WLCE: %u frames after setup complete\n", wl_frames);
+ 	}
++	(void)wl_wmi_bringup();
+ 	return err;
+ }
+ 
