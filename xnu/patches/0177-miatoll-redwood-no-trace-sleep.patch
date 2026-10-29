@@ -1,0 +1,12 @@
+diff --git a/iokit/Kernel/arm/RedwoodGPU.cpp b/iokit/Kernel/arm/RedwoodGPU.cpp
+--- a/iokit/Kernel/arm/RedwoodGPU.cpp
++++ b/iokit/Kernel/arm/RedwoodGPU.cpp
+@@ -217,7 +217,7 @@ struct redwood_worked {
+ static IOLock * gGPULock;                       /* around everything that is the GPU's (redwood_gpu_...) */
+ static bool gGPUReported;
+ static bool gGPUCached;                         /* boot-arg gpu_cached=1 */
+-static uint32_t gTraceSlow = 300;               /* 0150: boot-arg gpu_trace_ms (0: no waits) */
++static uint32_t gTraceSlow = 0;                 /* 0150: boot-arg gpu_trace_ms (0: no waits) */
+ static uint32_t gGPUKeep = 1;                   /* boot-arg gpu_keep=0 (a test): none kept; gpu_keep=2: kept ones cleared when given again */
+ static bool gGPUSaidSetIova;                    /* MSM_INFO_SET_IOVA has been refused out loud once */
+ 

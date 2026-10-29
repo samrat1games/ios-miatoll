@@ -395,12 +395,15 @@ static const char *row_sub(int p, int i)
 extern void menu_android(void);
 extern void menu_poweroff(void);
 
-static int opt[5] = { 1, 0, 0, 1, 0 };	/* GPU, GPU drawing, Metal, Wi-Fi, Bluetooth */
+static int opt[5] = { 1, 1, 0, 1, 0 };	/* GPU drawing works since gpu_trace_ms=0 (the driver slept 300 ms after every log line) */	/* GPU, GPU drawing, Metal, Wi-Fi, Bluetooth */
 static char args[128];
 
 static void build_args(void)
 {
 	char *p = args;
+	const char *s0 = " gpu_trace_ms=0";
+	while (*s0)
+		*p++ = *s0++;
 	for (int i = 0; i < 5; ++i) {
 		const char *s = i == 0 ? (opt[0] ? "" : " gpu=0") : i == 1 ? (opt[0] && !opt[1] ? " gl=0" : "") :
 		    i == 2 ? (opt[0] && opt[2] ? " metal=1" : "") : i == 3 ? (opt[3] ? "" : " sweetmodem=0") :

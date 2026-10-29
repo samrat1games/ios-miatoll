@@ -879,3 +879,18 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - fimiatoll/: Electron app (Flash-iMiatoll): `npm install --cache <private dir>` (the default ~/.npm is root-owned here; node_modules is 540 MB, the disk
   filled up once), `npm start`. Needs adb/fastboot. images/ (gitignored) holds shim-boot-google/classic.img for the app to flash.
 - Not done: app icon PNG, tests of torch/Wi-Fi/Metal (need a kernel "selftest" boot), PMIC torch, Bluetooth, AirDrop/cast.
+
+## iMiatoll UEFI menu + FiMiatoll app (2026-10-29)
+- The menu image is flashed in `boot` (backups of the previous boot and of Android's `bootbak` are in `../boot-backups/`, not in git). The shim menu
+  (shim/menu.c, touch.c) draws like the iOS recovery screen: touch (FT8756 bit-bang SPI + fw download, ported from sweet_touch.c), keys, languages
+  (EN RU UA DE ES FR), About iMiatoll 1.0.0 with the dot-matrix mascot Mitlk. GPU drawing is OFF by default (it hangs SpringBoard: a loop of 16 KiB
+  RedwoodGPU newBuffer calls; without it iOS is fine).
+- Looks: `THEME=sf|google|classic MENU=1 shim/build.sh payload.bin` (tools/gen-theme.py). sf = Apple SF + SF Symbols (local only, never commit or ship),
+  google = Roboto + Material Icons (shim/google/), classic = first version's bitmap font.
+- Wi-Fi: HTC READY reached (kernel 0176: a CE slot done by hardware with nbytes 0 is taken anyway). Next: HTC connect service, WMI ready/scan.
+- RTC: sweetrtc must be (real epoch - PMIC seconds); 1786732635 was right on 2026-10-29 13:10 UTC.
+- fimiatoll/: Electron app (Flash-iMiatoll): npm install --cache <private dir> (the default ~/.npm is root-owned here), npm start. Needs adb/fastboot.
+  images/ (gitignored) holds shim-boot-google/classic.img for the app to flash.
+
+- **GPU drawing works (2026-10-29):** the "hang" was RedwoodGPU's debug sleep (`gTraceSlow = 300` ms after every IOLog line; one glTexImage2D = seconds).
+  Boot-arg `gpu_trace_ms=0` fixes it (the menu now always adds it; patch 0177 makes 0 the default). GPU drawing is ON by default in the menu again.
