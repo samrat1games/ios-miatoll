@@ -1,0 +1,80 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2981,7 +2981,8 @@ wl_ce_send(unsigned i, uint64_t pa, uint16_t n, uint16_t transfer_id)
+ #define WMI_EV_SCAN                     0x3001u
+ #define WMI_EV_MGMT_RX                  0x7001u
+ 
+-static volatile int wl_svc_ready, wl_wmi_ready, wl_scan_done, wl_scan_started;
++static volatile int wl_svc_ready, wl_wmi_ready, wl_scan_done, wl_scan_started, wl_scan_failed;
++static uint32_t wl_scan_flags = 0x3e;
+ static volatile uint32_t wl_num_mem_reqs;
+ static uint8_t wl_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x99, 0x01};
+ static vm_offset_t wl_wtx;
+@@ -3083,7 +3084,9 @@ wl_wmi_rx(const uint8_t *d, unsigned n)
+ 	n -= 4;
+ 	static unsigned logged;
+ 	if (logged++ < 60) {
+-		printf("SWEET WMI: event %#x, %u bytes\n", id, n);
++		printf("SWEET WMI: event %#x, %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n", id, n, n > 0 ? d[0] : 0,
++		    n > 1 ? d[1] : 0, n > 2 ? d[2] : 0, n > 3 ? d[3] : 0, n > 4 ? d[4] : 0, n > 5 ? d[5] : 0, n > 6 ? d[6] : 0,
++		    n > 7 ? d[7] : 0, n > 8 ? d[8] : 0, n > 9 ? d[9] : 0, n > 10 ? d[10] : 0, n > 11 ? d[11] : 0);
+ 	}
+ 	if (id == WMI_EV_SERVICE_READY || id == WMI_EV_READY || id == WMI_EV_SCAN) {
+ 		/* first TLV: the event structure */
+@@ -3103,7 +3106,12 @@ wl_wmi_rx(const uint8_t *d, unsigned n)
+ 				} else if (id == WMI_EV_READY && len >= 36) {
+ 					uint32_t st;
+ 					memcpy(&st, v + 32, 4);
+-					memcpy(wl_mac, v + 24, 6);
++					{
++						static const uint8_t zero[6] = {0};
++						if (memcmp(v + 24, zero, 6) != 0) {
++							memcpy(wl_mac, v + 24, 6);   /* 0184: an all-zero MAC made the vdev (and then the scan) fail */
++						}
++					}
+ 					printf("SWEET WMI: ready, status %u, mac %02x:%02x:%02x:%02x:%02x:%02x\n", st, wl_mac[0], wl_mac[1], wl_mac[2],
+ 					    wl_mac[3], wl_mac[4], wl_mac[5]);
+ 					wl_wmi_ready = 1;
+@@ -3118,6 +3126,9 @@ wl_wmi_rx(const uint8_t *d, unsigned n)
+ 					if (ty & 2) {
+ 						wl_scan_done = 1;
+ 					}
++					if (ty & 0x40) {
++						wl_scan_failed = 1;
++					}
+ 				}
+ 			}
+ 		}
+@@ -3229,7 +3240,7 @@ wl_wmi_scan(void)
+ 	s[4] = 0x1f;                            /* started, completed, bss channel, foreign channel, dequeued */
+ 	s[5] = 50; s[6] = 150; s[7] = 50; s[8] = 500;
+ 	s[12] = 20000; s[13] = 5;
+-	s[14] = 0x3e;                           /* bcast probe req, cck, ofdm, chan stat; filter bit inverted as ath10k does */
++	s[14] = wl_scan_flags;                  /* bcast probe req, cck, ofdm, chan stat; filter bit inverted as ath10k does */
+ 	s[16] = 0;                              /* channels: all */
+ 	s[17] = 1;                              /* one bssid: broadcast */
+ 	s[18] = 0;                              /* ssids */
+@@ -3299,13 +3310,21 @@ wl_wmi_bringup(void)
+ 		printf("SWEET WMI: no ready event after init\n");
+ 		return ETIMEDOUT;
+ 	}
++	printf("SWEET WMI: vdev mac %02x:%02x:%02x:%02x:%02x:%02x\n", wl_mac[0], wl_mac[1], wl_mac[2], wl_mac[3], wl_mac[4], wl_mac[5]);
+ 	wl_wmi_vdev_create();
+-	for (unsigned ms = 0; ms < 500; ms += 10) {
++	for (unsigned ms = 0; ms < 1500; ms += 10) {
+ 		wl_ce_poll();
+ 		touch_wait(10);
+ 	}
+ 	wl_wmi_scan();
+ 	wl_wmi_wait(15000, &wl_scan_done);
++	if (!wl_scan_done && wl_scan_failed) {
++		/* 0184: the first start failed: once more with the flags ath10k's own scan sets (no probe-request filter inversion) */
++		wl_scan_failed = 0;
++		wl_scan_flags = 0x1e;
++		wl_wmi_scan();
++		wl_wmi_wait(15000, &wl_scan_done);
++	}
+ 	printf("SWEET WMI: scan %s, %u access points\n", wl_scan_done ? "complete" : "did not complete", wl_nbss);
+ 	wl_write_networks();
+ 	return 0;
