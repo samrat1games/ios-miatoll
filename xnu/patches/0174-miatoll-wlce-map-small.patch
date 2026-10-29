@@ -1,7 +1,9 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
-@@ -1,12 +1,22 @@
+@@ -2774,14 +2774,24 @@
+ } wl;
+ 
 +static vm_offset_t wl_reg_sh;
 +
 +/* only the copy-engine block (0x240000..0x24d000) and the shadow page (0x32000) are touched: two small maps
@@ -26,7 +28,10 @@ diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
 +	*(volatile uint32_t *)wl_va(off) = v;
  	__asm__ volatile("dsb sy" : : : "memory");
  }
-@@ -50,4 +50,5 @@
+@@ -2903,8 +2913,9 @@
+ static int
+ wl_ce_start(void)
+ {
 -	wl.reg = ml_io_map(WL_MEM_PA, WL_MEM_SZ);
 -	if (!wl.reg) {
 +	wl.reg = ml_io_map(WL_MEM_PA + 0x240000u, 0xd000u);
@@ -34,3 +39,4 @@ diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
 +	if (!wl.reg || !wl_reg_sh) {
  		return ENOMEM;
  	}
+ 	/* rings: up to 64 x 16 bytes each, 1 KiB apart, plus the read-index mirror at offset 0 */
