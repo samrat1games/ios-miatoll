@@ -1,0 +1,198 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2999,6 +2999,7 @@ struct wl_bss {
+ static struct wl_bss wl_bss[48];
+ static volatile unsigned wl_nbss;
+ static volatile int wl_full_reorder;
++static volatile int wl_never;
+ static uint32_t wl_ev_id[24], wl_ev_cnt[24];
+ 
+ static uint8_t *
+@@ -3369,6 +3370,149 @@ wl_write_networks(void)
+ 	printf("SWEET WIFI: networks.txt, %u networks, %zu bytes, error %d\n", wl_nbss, n, e);
+ }
+ 
++/*
++ * 0188: Wi-Fi workbench. With boot-arg wifidbg=1 the modem thread stays in wl_service() after the bring-up and runs the commands that
++ * arrive over the USB network (udp/5141, "wl <command>", tools/wl.py): no new kernel and no iOS boot for every experiment.
++ *   wl scan            a new scan, the access points are listed in the answer of "wl nets"
++ *   wl nets            the access points found so far
++ *   wl raw CMD BODY    one WMI command, CMD hex (e.g. 3001), BODY hex bytes (the TLVs, without the command id)
++ *   wl pdev ID VALUE   WMI pdev set param
++ *   wl chan            send the channel list again
++ *   wl ev              counts of the events received
++ *   wl last            the answer of the last command
++ */
++static char wl_cmd_q[200];
++static volatile int wl_cmd_full;
++static char wl_last[420] = "no command yet\n";
++
++int
++sweet_wifi_cmd(const char *cmd, char *reply, size_t rlen)
++{
++	if (strcmp(cmd, "last") == 0) {
++		snprintf(reply, rlen, "%s", wl_last);
++		return 0;
++	}
++	if (wl_cmd_full) {
++		snprintf(reply, rlen, "busy\n");
++		return EBUSY;
++	}
++	strlcpy(wl_cmd_q, cmd, sizeof(wl_cmd_q));
++	wl_cmd_full = 1;
++	snprintf(reply, rlen, "queued: %s (ask \"wl last\" in a few seconds)\n", cmd);
++	return 0;
++}
++
++static unsigned
++wl_hex(const char *s, uint8_t *out, unsigned max)
++{
++	unsigned n = 0;
++	while (s[0] && s[1] && n < max) {
++		unsigned v = 0;
++		for (int k = 0; k < 2; ++k) {
++			char c = s[k];
++			v = (v << 4) | (unsigned)(c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0);
++		}
++		out[n++] = (uint8_t)v;
++		s += 2;
++		while (*s == ' ') {
++			++s;
++		}
++	}
++	return n;
++}
++
++static unsigned
++wl_num(const char **ps)
++{
++	const char *s = *ps;
++	unsigned v = 0;
++	while (*s == ' ') {
++		++s;
++	}
++	while ((*s >= '0' && *s <= '9') || (*s >= 'a' && *s <= 'f') || (*s >= 'A' && *s <= 'F')) {
++		v = (v << 4) | (unsigned)(*s <= '9' ? *s - '0' : (*s | 0x20) - 'a' + 10);
++		++s;
++	}
++	*ps = s;
++	return v;
++}
++
++static void
++wl_do_cmd(const char *c)
++{
++	static uint8_t body[320];
++	wl_last[0] = 0;
++	if (strncmp(c, "scan", 4) == 0) {
++		wl_nbss = 0;
++		wl_scan_done = 0;
++		wl_scan_failed = 0;
++		wl_wmi_scan();
++		wl_wmi_wait(15000, &wl_scan_done);
++		snprintf(wl_last, sizeof(wl_last), "scan %s, %u access points\n", wl_scan_done ? "complete" : "not complete", wl_nbss);
++		wl_write_networks();
++	} else if (strncmp(c, "nets", 4) == 0) {
++		size_t n = 0;
++		for (unsigned i = 0; i < wl_nbss && n + 70 < sizeof(wl_last); ++i) {
++			n += (size_t)snprintf(wl_last + n, sizeof(wl_last) - n, "%s ch%u %d\n", wl_bss[i].ssid_len ? wl_bss[i].ssid : "(hidden)",
++			    wl_bss[i].channel, wl_bss[i].snr);
++		}
++		if (!n) {
++			snprintf(wl_last, sizeof(wl_last), "no access points\n");
++		}
++	} else if (strncmp(c, "raw ", 4) == 0) {
++		const char *p = c + 4;
++		uint32_t id = wl_num(&p);
++		while (*p == ' ') {
++			++p;
++		}
++		unsigned n = wl_hex(p, body, sizeof(body));
++		int e = wl_wmi_send(id, body, n);
++		snprintf(wl_last, sizeof(wl_last), "sent %#x, %u bytes, error %d\n", id, n, e);
++		wl_wmi_wait(1500, &wl_never);
++	} else if (strncmp(c, "pdev ", 5) == 0) {
++		const char *p = c + 5;
++		uint32_t pv[2];
++		pv[0] = wl_num(&p);
++		pv[1] = wl_num(&p);
++		uint8_t b[16];
++		uint8_t *q = wl_tlv(b, 82, 8);
++		memcpy(q, pv, 8);
++		int e = wl_wmi_send(0x4003u, b, 12);
++		snprintf(wl_last, sizeof(wl_last), "pdev param %u = %u, error %d\n", pv[0], pv[1], e);
++		wl_wmi_wait(1000, &wl_never);
++	} else if (strncmp(c, "chan", 4) == 0) {
++		int e = wl_wmi_chan_list();
++		snprintf(wl_last, sizeof(wl_last), "channel list sent, error %d\n", e);
++		wl_wmi_wait(1000, &wl_never);
++	} else if (strncmp(c, "ev", 2) == 0) {
++		size_t n = 0;
++		for (unsigned k = 0; k < 24 && wl_ev_id[k] && n + 24 < sizeof(wl_last); ++k) {
++			n += (size_t)snprintf(wl_last + n, sizeof(wl_last) - n, "%#x:%u ", wl_ev_id[k], wl_ev_cnt[k]);
++		}
++		snprintf(wl_last + n, sizeof(wl_last) - n, "\n");
++	} else {
++		snprintf(wl_last, sizeof(wl_last), "unknown: scan, nets, raw CMD BODY, pdev ID VALUE, chan, ev, last\n");
++	}
++	printf("SWEET WIFI: wl %s -> %s", c, wl_last);
++}
++
++static void
++wl_service(void)
++{
++	printf("SWEET WIFI: workbench ready, commands on udp/5141 (\"wl ...\")\n");
++	for (;;) {
++		wl_ce_poll();
++		tftp_work();
++		if (wl_cmd_full) {
++			char c[sizeof(wl_cmd_q)];
++			strlcpy(c, wl_cmd_q, sizeof(c));
++			wl_cmd_full = 0;
++			wl_do_cmd(c);
++		}
++		touch_wait(10);
++	}
++}
++
+ /* the whole WMI bring-up after HTC setup complete; every step says what it did */
+ static int
+ wl_wmi_bringup(void)
+@@ -3422,6 +3566,13 @@ wl_wmi_bringup(void)
+ 	}
+ 	printf("SWEET WMI: scan %s, %u access points\n", wl_scan_done ? "complete" : "did not complete", wl_nbss);
+ 	wl_write_networks();
++	{
++		uint32_t dbg = 0;
++		(void)PE_parse_boot_argn("wifidbg", &dbg, sizeof(dbg));
++		if (dbg) {
++			wl_service();
++		}
++	}
+ 	return 0;
+ }
+ 
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1010,6 +1010,8 @@ ud_prefs_reset(const char *domain, char *msg, size_t msglen)
+ 	return e;
+ }
+ 
++extern int sweet_wifi_cmd(const char *cmd, char *reply, size_t rlen);   /* 0188: bsd/dev/sweet_modem.inc */
++
+ static void
+ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+@@ -1078,6 +1080,10 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 			char msg[240];
+ 			(void)ud_prefs_reset(buf + 11, msg, sizeof(msg));
+ 			ud_cmd_send(so, &from, msg);
++		} else if (strncmp(buf, "wl ", 3) == 0) {
++			char wmsg[420];
++			(void)sweet_wifi_cmd(buf + 3, wmsg, sizeof(wmsg));
++			ud_cmd_send(so, &from, wmsg);
+ 		} else if (strcmp(buf, "reboot") == 0) {
+ 			ud_cmd_send(so, &from, "restarting\n");
+ 			ud_sleep_ms(300);
