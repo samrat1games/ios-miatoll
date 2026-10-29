@@ -866,3 +866,16 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   After every push: `gh run view RID --log | grep "Skipping patch"` and compare with the list of mine.
 - logs/recovery-0172.txt: after 0172 the GPU makes buffers (23 gemNew in a row), modem reaches mission mode, then PANIC kmem_alloc(786432):
   sm_thread -> wlfw_bringup -> io_map -> kmem_alloc_contig_guard = the 768 KiB SMMU ml_io_map (what 0167/0173 splits).
+
+## iMiatoll UEFI menu + FiMiatoll app (2026-10-29)
+- The menu image is flashed in `boot` (backups of the previous boot and of Android's `bootbak` are in `../boot-backups/`, not in git). The shim menu
+  (shim/menu.c, touch.c) draws like the iOS recovery screen: touch (FT8756 bit-bang SPI + fw download, ported from sweet_touch.c), keys, languages
+  (EN RU UA DE ES FR), About iMiatoll 1.0.0 with the dot-matrix mascot Mitlk. GPU drawing is OFF by default (it hangs SpringBoard: a loop of 16 KiB
+  RedwoodGPU newBuffer calls; without it iOS is fine).
+- Looks: `THEME=sf|google|classic MENU=1 shim/build.sh payload.bin` (tools/gen-theme.py). sf = Apple SF + SF Symbols (local only, never commit or ship),
+  google = Roboto + Material Icons (shim/google/), classic = first version's bitmap font.
+- Wi-Fi: HTC READY reached (kernel 0176: a CE slot done by hardware with nbytes 0 is taken anyway). Next: HTC connect service, WMI ready/scan.
+- RTC: sweetrtc must be (real epoch - PMIC seconds); 1786732635 was right on 2026-10-29 13:10 UTC.
+- fimiatoll/: Electron app (Flash-iMiatoll): `npm install --cache <private dir>` (the default ~/.npm is root-owned here; node_modules is 540 MB, the disk
+  filled up once), `npm start`. Needs adb/fastboot. images/ (gitignored) holds shim-boot-google/classic.img for the app to flash.
+- Not done: app icon PNG, tests of torch/Wi-Fi/Metal (need a kernel "selftest" boot), PMIC torch, Bluetooth, AirDrop/cast.

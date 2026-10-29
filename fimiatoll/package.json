@@ -1,0 +1,29 @@
+{
+  "name": "fimiatoll",
+  "productName": "FiMiatoll",
+  "version": "1.0.0",
+  "description": "Flash-iMiatoll: installs the iMiatoll UEFI menu and iOS (from an IPSW) on a Redmi Note 9S",
+  "main": "main.js",
+  "author": "Samrat",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac --win --linux"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16"
+  },
+  "devDependencies": {
+    "electron": "^33.4.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "dev.imiatoll.fimiatoll",
+    "productName": "FiMiatoll",
+    "files": ["main.js", "preload.js", "renderer/**", "package.json"],
+    "extraResources": [{ "from": "platform-tools", "to": "platform-tools", "filter": ["**/*"] }],
+    "mac": { "category": "public.app-category.developer-tools", "target": ["dmg"] },
+    "win": { "target": ["nsis"] },
+    "linux": { "target": ["AppImage", "deb"], "category": "Utility" }
+  }
+}
