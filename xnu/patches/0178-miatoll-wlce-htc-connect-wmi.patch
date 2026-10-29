@@ -1,0 +1,125 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -1707,7 +1707,7 @@ rfs_request(uint32_t node, uint32_t port, const uint8_t *q, uint32_t qlen)
+ 				memcpy(&sa, pv + 1 + 12 * i, 4);
+ 				memcpy(&po, pv + 5 + 12 * i, 4);
+ 				memcpy(&ns, pv + 9 + 12 * i, 4);
+-				if (logged++ < 40) {
++				if (logged++ < 120) {
+ 					printf("SWEET RFS: %s caller %u sector %u x%u at %#x\n", write ? "write" : "read", id, sa, ns, po);
+ 				}
+ 				for (uint32_t j = 0; j < ns && !err; ++j) {
+@@ -2752,6 +2752,9 @@ static const struct { uint16_t src_n, src_max; uint8_t rx; } wl_ce_cfg[WL_CE_NUM
+ };
+ 
+ static volatile int wl_htc_ready;
++static volatile int wl_conn_status = -1;         /* 0178: HTC connect-service response: status, endpoint */
++static volatile int wl_conn_eid = -1;
++static volatile int wl_conn_service;
+ 
+ struct wl_desc {
+ 	uint64_t addr;
+@@ -2841,6 +2844,15 @@ wl_htc_rx(unsigned ce, const uint8_t *b, uint32_t n)
+ 		printf("SWEET WLCE: HTC READY: %u credits of %u bytes, %u endpoints\n", credits, csize, b[14]);
+ 		wl_htc_ready = 1;
+ 	}
++	if (b[0] == 0 && msg == 3 && n >= 16) {         /* HTC_MSG_CONNECT_SERVICE_RESPONSE_ID: message, service, status, endpoint, max size */
++		uint16_t svc, maxsz;
++		memcpy(&svc, b + 10, 2);
++		memcpy(&maxsz, b + 14, 2);
++		printf("SWEET WLCE: HTC connect service %#x: status %u endpoint %u max message %u\n", svc, b[12], b[13], maxsz);
++		wl_conn_service = svc;
++		wl_conn_eid = b[13];
++		wl_conn_status = b[12];
++	}
+ }
+ 
+ static void
+@@ -2920,6 +2932,64 @@ wl_ce_send(unsigned i, uint64_t pa, uint16_t n, uint16_t transfer_id)
+ 	return 0;
+ }
+ 
++/* 0178: HTC control messages (ath10k_htc_connect_service, ath10k_htc_start) on the control endpoint: pipe 0 up, pipe 2 down */
++static vm_offset_t wl_tx;
++static uint64_t wl_tx_pa;
++
++static void
++wl_wait_ms(unsigned ms_total, volatile int *flag)
++{
++	for (unsigned ms = 0; ms < ms_total && (!flag || *flag < 0); ms += 10) {
++		wl_ce_poll();
++		tftp_work();
++		touch_wait(10);
++	}
++}
++
++static int
++wl_htc_ctrl_send(const uint8_t *payload, uint16_t len)
++{
++	if (!wl_tx && wl_alloc(0x1000, &wl_tx, &wl_tx_pa)) {
++		return ENOMEM;
++	}
++	uint8_t *p = (uint8_t *)wl_tx;
++	memset(p, 0, 8 + len);
++	p[0] = 0;                               /* endpoint 0 */
++	p[2] = (uint8_t)len;
++	p[3] = (uint8_t)(len >> 8);
++	memcpy(p + 8, payload, len);
++	wl_sync(wl_tx, wl_tx_pa, 8u + len);
++	return wl_ce_send(0, wl_tx_pa, (uint16_t)(8u + len), 0);
++}
++
++/* HTC_MSG_CONNECT_SERVICE: message id 2, service id, flags, extra length; the answer says which endpoint carries the service */
++static int
++wl_htc_connect(uint16_t service, uint16_t flags)
++{
++	uint8_t m[8] = {0};
++	m[0] = 2;
++	m[2] = (uint8_t)service;
++	m[3] = (uint8_t)(service >> 8);
++	m[4] = (uint8_t)flags;
++	m[5] = (uint8_t)(flags >> 8);
++	wl_conn_status = -1;
++	int err = wl_htc_ctrl_send(m, sizeof(m));
++	if (err) {
++		return err;
++	}
++	wl_wait_ms(2000, &wl_conn_status);
++	return wl_conn_status == 0 ? 0 : wl_conn_status < 0 ? ETIMEDOUT : EIO;
++}
++
++/* HTC_MSG_SETUP_COMPLETE_EX: message id 6, then zeros (no bundling): the target starts sending WMI events */
++static int
++wl_htc_start(void)
++{
++	uint8_t m[14] = {0};
++	m[0] = 6;
++	return wl_htc_ctrl_send(m, sizeof(m));
++}
++
+ static int
+ wl_ce_start(void)
+ {
+@@ -3017,8 +3087,19 @@ wl_ce_start(void)
+ 		    wl_r(WL_CE(2) + WL_CE_CUR_DRRI));
+ 		return ETIMEDOUT;
+ 	}
+-	(void)wl_ce_send;
+-	return 0;
++	int err = wl_htc_connect(0x100, 0);             /* WMI control */
++	if (err) {
++		printf("SWEET WLCE: connect WMI service failed %d\n", err);
++		return err;
++	}
++	err = wl_htc_start();
++	printf("SWEET WLCE: HTC setup complete sent (%d), waiting 4 s for WMI events\n", err);
++	for (unsigned ms = 0; ms < 4000; ms += 10) {
++		wl_ce_poll();
++		tftp_work();
++		touch_wait(10);
++	}
++	return err;
+ }
+ 
+ static void
