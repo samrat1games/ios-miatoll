@@ -15,6 +15,7 @@
 #include "ufs.h"
 
 #define RESTART_BOOTLOADER	0x77665500U
+#define RESTART_RECOVERY	0x77665502U
 
 #define GICR_PE_SIZE		0x20000UL
 #define GICR_TYPER		0x08
@@ -367,10 +368,13 @@ static uint32_t to_us(uint64_t ticks)
 	return ticks * 10 / 192;	/* 19.2 MHz */
 }
 
-/* Android: a normal restart (no bootloader reason); the boot partition's own kernel starts, the shim was temporary */
+/*
+ * Android (dual boot): the menu itself is the boot partition, so a normal restart would only show the menu again. Android's boot
+ * image lives in the recovery partition (FiMiatoll puts it there) and a restart "into recovery" makes the bootloader load that one.
+ */
 void menu_android(void)
 {
-	wr32(IMEM_RESTART_REASON, 0);
+	wr32(IMEM_RESTART_REASON, RESTART_RECOVERY);
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
 	wr32(PSHOLD, 0);

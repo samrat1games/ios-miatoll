@@ -401,7 +401,7 @@ static char args[128];
 static void build_args(void)
 {
 	char *p = args;
-	const char *s0 = " gpu_trace_ms=0";
+	const char *s0 = " gpu_trace_ms=0 ufsroot=ios";	/* dual boot: iOS has its own partition "ios" (the kernel falls back to "userdata" when there is none) */
 	while (*s0)
 		*p++ = *s0++;
 	for (int i = 0; i < 5; ++i) {
