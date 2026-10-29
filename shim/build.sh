@@ -34,11 +34,19 @@ if [ -n "${1:-}" ]; then
 else
 	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
 fi
+# Dual boot: ANDROID_BOOT=<an Android boot.img> packs its kernel and ramdisk behind the payload; its cmdline and device tree
+# become the image's (the bootloader builds /chosen from them) and the menu's "Boot Android" starts it.
+DTB=../dtb/boot_unpacked/dtb CMDLINE="console=null"
+if [ -n "${ANDROID_BOOT:-}" ]; then
+	python3 ../tools/mkdual.py "$ANDROID_BOOT" out/ramdisk.bin out/ramdisk-dual.bin out/android.cmdline out/android.dtb
+	cp out/ramdisk-dual.bin out/ramdisk.bin
+	DTB=out/android.dtb CMDLINE=$(cat out/android.cmdline)
+fi
 mkbootimg --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
-	--dtb ../dtb/boot_unpacked/dtb --base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
+	--dtb "$DTB" --base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
 	--tags_offset 0x100 --dtb_offset 0x1f00000 --pagesize 4096 \
 	--os_version 17.0.0 --os_patch_level 2035-06 \
-	--cmdline "console=null" -o out/shim-boot.img
+	--cmdline "$CMDLINE" -o out/shim-boot.img
 # Host render of the console layout.
 /usr/bin/clang -O1 -Wall -o out/host_test console.c host_test.c && ./out/host_test
 ls -l out/Image out/shim-boot.img

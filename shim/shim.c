@@ -368,13 +368,23 @@ static uint32_t to_us(uint64_t ticks)
 	return ticks * 10 / 192;	/* 19.2 MHz */
 }
 
+/* the device tree the bootloader gave us: Android is entered with it */
+static uintptr_t g_dtb;
+
 /*
- * Android (dual boot): the menu itself is the boot partition, so a normal restart would only show the menu again. Android's boot
- * image lives in the recovery partition (FiMiatoll puts it there) and a restart "into recovery" makes the bootloader load that one.
+ * Android (dual boot): the Android kernel and ramdisk are inside this image (tools/mkdual.py) and are started from here.
+ * Without them (a plain menu image) or when anything is wrong the menu says so and starts again.
  */
 void menu_android(void)
 {
-	wr32(IMEM_RESTART_REASON, RESTART_RECOVERY);
+	const char *why = android_boot(g_dtb);
+
+	con_clear(RED);
+	con_str("ANDROID", "cannot start Android from this image");
+	con_skip();
+	con_str("WHY", why);
+	delay_ms(6000);
+	wr32(IMEM_RESTART_REASON, 0);
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
 	wr32(PSHOLD, 0);
@@ -394,6 +404,7 @@ void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
 
+	g_dtb = dtb;
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_logo();
