@@ -1,0 +1,57 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3259,6 +3259,41 @@ wl_wmi_scan(void)
+ 	return wl_wmi_send(WMI_CMD_START_SCAN, b, (unsigned)(p - b));
+ }
+ 
++/*
++ * 0185: the channel list. A TLV firmware does not know which channels exist: the host tells it (ath10k_wmi_scan_chan_list from the
++ * regulatory update). Without it the scan has nothing to scan and "starts" with START_FAILED / internal failure (event 0x40, reason 4).
++ * 2.4 GHz channels 1-13 and the 5 GHz channels that are not radar channels, as 20 MHz legacy-mode channels (ath10k_update_channel_list).
++ */
++#define WMI_CMD_SCAN_CHAN_LIST          0x3003u
++#define WMI_TAG_SCAN_CHAN_LIST_CMD      79
++#define WMI_TAG_CHANNEL                 80
++
++static int
++wl_wmi_chan_list(void)
++{
++	static uint8_t b[1024];
++	static const uint16_t g5[] = {5180, 5200, 5220, 5240, 5745, 5765, 5785, 5805, 5825};
++	unsigned n = 13 + (unsigned)(sizeof(g5) / sizeof(g5[0]));
++	uint8_t *p = wl_tlv(b, WMI_TAG_SCAN_CHAN_LIST_CMD, 4);
++	memcpy(p, &n, 4);
++	p += 4;
++	p = wl_tlv(p, WMI_TAG_ARRAY_STRUCT, (uint16_t)(n * (4 + 24)));
++	for (unsigned i = 0; i < n; ++i) {
++		uint32_t mhz = i < 13 ? 2412u + 5u * i : g5[i - 13];
++		uint32_t c[6] = {0};
++		uint32_t mode = i < 13 ? 1u : 0u;                       /* MODE_11G, MODE_11A */
++		c[0] = mhz;
++		c[1] = mhz;                                             /* centre frequency of a 20 MHz channel */
++		c[3] = mode | (1u << 11) | (1u << 12);                  /* mode; ALLOW_HT, ALLOW_VHT */
++		c[4] = 0u | (40u << 8) | (40u << 16);                   /* min power 0, max power 20 dBm, regulatory power (0.5 dBm units) */
++		c[5] = 0u | (40u << 8);                                 /* antenna gain 0, max tx power */
++		p = wl_tlv(p, WMI_TAG_CHANNEL, 24);
++		memcpy(p, c, 24);
++		p += 24;
++	}
++	return wl_wmi_send(WMI_CMD_SCAN_CHAN_LIST, b, (unsigned)(p - b));
++}
++
+ static void
+ wl_wmi_wait(unsigned ms_total, volatile int *flag)
+ {
+@@ -3311,6 +3346,11 @@ wl_wmi_bringup(void)
+ 		return ETIMEDOUT;
+ 	}
+ 	printf("SWEET WMI: vdev mac %02x:%02x:%02x:%02x:%02x:%02x\n", wl_mac[0], wl_mac[1], wl_mac[2], wl_mac[3], wl_mac[4], wl_mac[5]);
++	wl_wmi_chan_list();
++	for (unsigned ms = 0; ms < 500; ms += 10) {
++		wl_ce_poll();
++		touch_wait(10);
++	}
+ 	wl_wmi_vdev_create();
+ 	for (unsigned ms = 0; ms < 1500; ms += 10) {
+ 		wl_ce_poll();
