@@ -6,7 +6,7 @@
   };
   const S = {
     tab: 'home', lang: store.get('lang', (navigator.language || 'en').startsWith('ru') ? 'ru' : (navigator.language || '').startsWith('uk') ? 'ua' : 'en'),
-    island: store.get('island', false), theme: store.get('theme', 'auto'), look: store.get('look', 'google'),
+    island: store.get('island', false), glass: store.get('glass', false), theme: store.get('theme', 'auto'), look: store.get('look', 'google'),
     tools: { fastboot: false, adb: false }, device: null, ipsw: null, ipswInfo: null, simg: null, image: null,
     step: 0, guide: false, work: null, expect: null, building: false, busy: false, log: [], progress: 0,
   };
@@ -150,6 +150,7 @@
     return `<h1>${t('settingsTitle')}</h1><p class="sub"> </p>
       <div class="group-title">${t('language')}</div><div class="group"><div class="seg">${langs}</div></div>
       <div class="group-title">${t('appearance')}</div><div class="group"><div class="seg">${th}</div></div>
+      <div class="group"><div class="row">${ico('#5e5ce6', P.globe)}<div class="txt"><b>${t('glass')}</b><small>${t('glassSub')}</small></div><div class="switch ${S.glass ? 'on' : ''}" id="sw-glass"></div></div></div>
       <div class="group"><div class="row">${ico('#000', P.pill)}<div class="txt"><b>${t('island')}</b><small>${t('islandSub')}</small></div><div class="switch ${S.island ? 'on' : ''}" id="sw-island"></div></div></div>
       <div class="group-title">${t('about')}</div>
       <div class="group"><div style="text-align:center;padding:14px">${logo('logo')}<b>FiMiatoll</b><div class="sub" style="margin:2px 0 0">Flash-iMiatoll · ${t('version')} 1.0.0</div><div class="sub" style="margin-top:8px">${t('aboutText')}</div></div></div>`;
@@ -157,6 +158,7 @@
 
   function render() {
     document.documentElement.lang = S.lang === 'ua' ? 'uk' : S.lang;
+    document.documentElement.classList.toggle('glass', !!S.glass);
     if (S.theme === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = S.theme;
     const v = $('#view');
     const keep = v.scrollTop;
@@ -174,6 +176,7 @@
     document.querySelectorAll('[data-theme]').forEach((b) => { b.onclick = () => { S.theme = b.dataset.theme; store.set('theme', S.theme); render(); }; });
     document.querySelectorAll('[data-look]').forEach((b) => { b.onclick = async () => { S.look = b.dataset.look; store.set('look', S.look); S.image = await window.fi.bundled(S.look); render(); }; });
     const on = (id, fn) => { const e = $(id); if (e) e.onclick = fn; };
+    on('#sw-glass', () => { S.glass = !S.glass; store.set('glass', S.glass); render(); });
     on('#sw-island', () => { S.island = !S.island; store.set('island', S.island); applyIsland(); if (S.island) island('FiMiatoll', t('island'), {}); render(); });
     on('#rb-bl', () => window.fi.reboot('bootloader'));
     on('#rb-sys', () => window.fi.reboot('system'));
