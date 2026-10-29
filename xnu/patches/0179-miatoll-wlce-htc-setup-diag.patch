@@ -1,0 +1,54 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2755,6 +2755,7 @@ static volatile int wl_htc_ready;
+ static volatile int wl_conn_status = -1;         /* 0178: HTC connect-service response: status, endpoint */
+ static volatile int wl_conn_eid = -1;
+ static volatile int wl_conn_service;
++static volatile unsigned wl_frames;                    /* 0179: frames received after the connect response */
+ 
+ struct wl_desc {
+ 	uint64_t addr;
+@@ -2844,6 +2845,9 @@ wl_htc_rx(unsigned ce, const uint8_t *b, uint32_t n)
+ 		printf("SWEET WLCE: HTC READY: %u credits of %u bytes, %u endpoints\n", credits, csize, b[14]);
+ 		wl_htc_ready = 1;
+ 	}
++	if (wl_conn_status == 0) {
++		wl_frames++;
++	}
+ 	if (b[0] == 0 && msg == 3 && n >= 16) {         /* HTC_MSG_CONNECT_SERVICE_RESPONSE_ID: message, service, status, endpoint, max size */
+ 		uint16_t svc, maxsz;
+ 		memcpy(&svc, b + 10, 2);
+@@ -3094,11 +3098,31 @@ wl_ce_start(void)
+ 	}
+ 	err = wl_htc_start();
+ 	printf("SWEET WLCE: HTC setup complete sent (%d), waiting 4 s for WMI events\n", err);
+-	for (unsigned ms = 0; ms < 4000; ms += 10) {
++	wl_frames = 0;
++	for (unsigned ms = 0; ms < 4000 && !wl_frames; ms += 10) {
+ 		wl_ce_poll();
+ 		tftp_work();
+ 		touch_wait(10);
+ 	}
++	if (!wl_frames) {
++		/* 0179: nothing came: say where every engine stands, then try the older SETUP_COMPLETE (message id 5) */
++		for (unsigned i = 0; i < 6; ++i) {
++			wl_sync(wl.mem, wl.mem_pa, 64);
++			printf("SWEET WLCE: CE%u srri %u drri %u (mirror %u) sw src %u dst %u\n", i, wl_r(WL_CE(i) + WL_CE_CUR_SRRI) & 0xffff,
++			    wl_r(WL_CE(i) + WL_CE_CUR_DRRI) & 0xffff, *(volatile uint32_t *)(wl.mem + 4 * i) & 0xffff, wl.ce[i].src_wr,
++			    wl.ce[i].dst_sw);
++		}
++		uint8_t m5[6] = {0};
++		m5[0] = 5;
++		err = wl_htc_ctrl_send(m5, sizeof(m5));
++		printf("SWEET WLCE: SETUP_COMPLETE (5) sent (%d), waiting 4 s more\n", err);
++		for (unsigned ms = 0; ms < 4000 && !wl_frames; ms += 10) {
++			wl_ce_poll();
++			tftp_work();
++			touch_wait(10);
++		}
++		printf("SWEET WLCE: %u frames after setup complete\n", wl_frames);
++	}
+ 	return err;
+ }
+ 
