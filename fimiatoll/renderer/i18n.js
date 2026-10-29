@@ -1,5 +1,6 @@
 window.I18N = {
   en: {
+    ipaTitle: 'Install an IPA', ipaSub: 'WhatsApp, Telegram and other apps: decrypted arm64 IPAs only (App Store IPAs are tied to their buyer).', chooseIpa: 'Choose IPA files…', ipaOk: 'Can run here', ipa_noApp: 'No Payload/*.app inside', ipa_noExe: 'App binary not found', ipa_no64: 'No 64-bit code: 32-bit apps do not run on iOS 11+', ipa_fairplay: 'Encrypted by the App Store (FairPlay)', ipa_unreadable: 'Cannot read this file', ipaServe: 'Serve to the phone', ipaStop: 'Stop serving', ipaHow: 'On the phone: MiatollTools, IPA, type the address, Download and install.', ipaNet: 'is the USB network up (192.168.7.1)?',
     glass: 'Liquid Glass look', glassSub: 'Translucent capsules and a floating tab bar.',
     patchBuild: 'Patch the IPSW and build', building: 'Patching the IPSW…', buildWait: 'Enter your password in the Terminal window. The root is built there (about 15 min); this app notices when it is ready.', rootReady: 'iOS root is ready', startGuide: 'Start the guide',
     tabHome: 'Home', tabFlash: 'Flash', tabLearn: 'Learn', tabSettings: 'Settings',
@@ -34,6 +35,7 @@ window.I18N = {
     ],
   },
   ru: {
+    ipaTitle: 'Установка IPA', ipaSub: 'WhatsApp, Telegram и другие: только расшифрованные arm64-IPA (IPA из App Store привязаны к покупателю).', chooseIpa: 'Выбрать IPA…', ipaOk: 'Можно запускать', ipa_noApp: 'Внутри нет Payload/*.app', ipa_noExe: 'Не найден бинарник приложения', ipa_no64: 'Нет 64-битного кода: 32-битные приложения не идут на iOS 11+', ipa_fairplay: 'Зашифровано App Store (FairPlay)', ipa_unreadable: 'Файл не читается', ipaServe: 'Раздать на телефон', ipaStop: 'Остановить раздачу', ipaHow: 'На телефоне: MiatollTools, IPA, введите адрес, «Скачать и установить».', ipaNet: 'включена ли USB-сеть (192.168.7.1)?',
     glass: 'Вид «жидкое стекло»', glassSub: 'Полупрозрачные капсулы и плавающая панель вкладок.',
     patchBuild: 'Пропатчить IPSW и собрать', building: 'Патчу IPSW…', buildWait: 'Введите пароль в окне Терминала. Root собирается там (около 15 минут); приложение заметит, когда он готов.', rootReady: 'Root iOS готов', startGuide: 'Начать обучение',
     tabHome: 'Главная', tabFlash: 'Прошивка', tabLearn: 'Обучение', tabSettings: 'Настройки',
@@ -68,6 +70,7 @@ window.I18N = {
     ],
   },
   ua: {
+    ipaTitle: 'Встановлення IPA', ipaSub: 'WhatsApp, Telegram та інші: лише розшифровані arm64-IPA (IPA з App Store прив\'язані до покупця).', chooseIpa: 'Вибрати IPA…', ipaOk: 'Можна запускати', ipa_noApp: 'Всередині немає Payload/*.app', ipa_noExe: 'Не знайдено бінарник застосунку', ipa_no64: 'Немає 64-бітного коду: 32-бітні застосунки не йдуть на iOS 11+', ipa_fairplay: 'Зашифровано App Store (FairPlay)', ipa_unreadable: 'Файл не читається', ipaServe: 'Роздати на телефон', ipaStop: 'Зупинити роздачу', ipaHow: 'На телефоні: MiatollTools, IPA, введіть адресу, «Завантажити й встановити».', ipaNet: 'чи ввімкнена USB-мережа (192.168.7.1)?',
     glass: 'Вигляд «рідке скло»', glassSub: 'Напівпрозорі капсули та плаваюча панель вкладок.',
     patchBuild: 'Пропатчити IPSW і зібрати', building: 'Патчу IPSW…', buildWait: 'Введіть пароль у вікні Терміналу. Root збирається там (близько 15 хвилин); застосунок помітить, коли він готовий.', rootReady: 'Root iOS готовий', startGuide: 'Почати навчання',
     tabHome: 'Головна', tabFlash: 'Прошивка', tabLearn: 'Навчання', tabSettings: 'Налаштування',

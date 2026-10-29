@@ -8,7 +8,7 @@
     tab: 'home', lang: store.get('lang', (navigator.language || 'en').startsWith('ru') ? 'ru' : (navigator.language || '').startsWith('uk') ? 'ua' : 'en'),
     island: store.get('island', false), glass: store.get('glass', false), theme: store.get('theme', 'auto'), look: store.get('look', 'google'),
     tools: { fastboot: false, adb: false }, device: null, ipsw: null, ipswInfo: null, simg: null, image: null,
-    step: 0, guide: false, work: null, expect: null, building: false, busy: false, log: [], progress: 0,
+    ipas: [], ipaUrls: null, step: 0, guide: false, work: null, expect: null, building: false, busy: false, log: [], progress: 0,
   };
   const t = (k) => (window.I18N[S.lang] && window.I18N[S.lang][k]) || window.I18N.en[k] || k;
 
@@ -109,6 +109,12 @@
         ${S.building ? `<div class="row"><div class="txt"><small>${t('buildWait')}</small></div></div>` : ''}`}
         <div class="row tap" id="pick-simg">${ico('#ff9f0a', P.file)}<div class="txt"><b>${t('chooseSimg')}</b><small>${S.simg ? S.simg.split(/[\\/]/).pop() : '—'}</small></div></div>
         <div class="btns"><button class="btn danger" id="do-ios" ${fb && S.simg ? '' : 'disabled'}>${t('flashIos')}</button></div></div>
+      <div class="group-title">${t('ipaTitle')}</div>
+      <div class="group"><div class="row"><div class="txt"><small>${t('ipaSub')}</small></div></div>
+        <div class="row tap" id="pick-ipa">${ico('#34c759', P.file)}<div class="txt"><b>${t('chooseIpa')}</b><small>${S.ipas.length ? S.ipas.map((x) => x.file.split(/[\\/]/).pop()).join(', ') : '—'}</small></div></div>
+        ${S.ipas.map((x) => `<div class="row"><div class="txt"><b>${x.file.split(/[\\/]/).pop()}</b><small>${x.ok ? t('ipaOk') : t('ipa_' + x.reason)}</small></div><span class="badge ${x.ok ? 'ok' : 'bad'}">${x.ok ? 'arm64' : '×'}</span></div>`).join('')}
+        <div class="btns"><button class="btn" id="do-ipa" ${S.ipas.some((x) => x.ok) ? '' : 'disabled'}>${S.ipaUrls ? t('ipaStop') : t('ipaServe')}</button></div>
+        ${S.ipaUrls ? `<div class="row"><div class="txt"><small>${t('ipaHow')}</small><code style="user-select:text">${S.ipaUrls.join('<br>')}</code></div></div>` : ''}</div>
       <div class="group-title">${t('logTitle')}</div><div class="group"><div class="bar"><i style="width:${S.progress}%"></i></div><div style="padding:10px 14px"><div class="log" id="log">${S.log.join('\n')}</div></div></div>`;
   }
 
@@ -194,6 +200,13 @@
         if (S.building) setTimeout(wait, 4000);
       };
       wait();
+    });
+    on('#pick-ipa', async () => { const fl = await window.fi.pick('ipa'); if (fl && fl.length) { S.ipas = []; for (const f of fl) S.ipas.push(Object.assign({ file: f }, await window.fi.ipaCheck(f))); render(); } });
+    on('#do-ipa', async () => {
+      if (S.ipaUrls) { await window.fi.ipaStop(); S.ipaUrls = null; render(); return; }
+      const r = await window.fi.ipaServe(S.ipas.filter((x) => x.ok).map((x) => x.file));
+      if (r.ok) { S.ipaUrls = r.urls; island(t('ipaServe'), r.urls[0], {}); } else addLog('ipa: ' + r.error + ' (' + t('ipaNet') + ')');
+      render();
     });
     on('#do-backup', async () => {
       if (!S.device || !['recovery', 'android'].includes(S.device.mode)) { addLog(t('needRecovery')); return; }

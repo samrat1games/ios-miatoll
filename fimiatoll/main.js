@@ -68,11 +68,11 @@ ipcMain.handle('devices', async () => {
 });
 
 ipcMain.handle('pick', async (_e, kind) => {
-  const filters = kind === 'ipsw' ? [{ name: 'IPSW', extensions: ['ipsw', 'zip'] }]
+  const filters = kind === 'ipa' ? [{ name: 'IPA', extensions: ['ipa'] }] : kind === 'ipsw' ? [{ name: 'IPSW', extensions: ['ipsw', 'zip'] }]
     : kind === 'simg' ? [{ name: 'Sparse root image', extensions: ['simg', 'img'] }]
     : [{ name: 'Boot image', extensions: ['img'] }];
-  const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters });
-  return r.canceled ? null : r.filePaths[0];
+  const r = await dialog.showOpenDialog(win, { properties: kind === 'ipa' ? ['openFile', 'multiSelections'] : ['openFile'], filters });
+  return r.canceled ? null : (kind === 'ipa' ? r.filePaths : r.filePaths[0]);
 });
 
 ipcMain.handle('ipsw:inspect', async (_e, file) => {
@@ -162,6 +162,71 @@ ipcMain.handle('bundled', async (_e, look) => {
     .find((p) => fs.existsSync(p));
   return f || null;
 });
+
+
+// ---- IPA install: the same check and server as tools/ipa-serve.py; the phone's MiatollTools downloads from it ----
+const http = require('http');
+const IPA_HOST = '192.168.7.1', IPA_PORT = 8080;
+let ipaServer = null;
+const served = {};
+
+function machoSlices(buf) {
+  const be = buf.readUInt32BE(0);
+  if (be === 0xcafebabe) {
+    const n = buf.readUInt32BE(4), out = [];
+    for (let i = 0; i < n; i++) out.push({ cpu: buf.readUInt32BE(8 + 20 * i) >>> 0, off: buf.readUInt32BE(16 + 20 * i) });
+    return out;
+  }
+  return [{ cpu: buf.readUInt32LE(4) >>> 0, off: 0 }];
+}
+function cryptid(buf, off) {
+  const magic = buf.readUInt32LE(off), hdr = magic === 0xfeedfacf ? 32 : 28, ncmds = buf.readUInt32LE(off + 16);
+  let p = off + hdr;
+  for (let i = 0; i < ncmds; i++) {
+    const cmd = buf.readUInt32LE(p), size = buf.readUInt32LE(p + 4);
+    if (cmd === 0x21 || cmd === 0x2c) return buf.readUInt32LE(p + 16);
+    p += size;
+  }
+  return 0;
+}
+function checkIpa(file) {
+  try {
+    const zip = new AdmZip(file);
+    const apps = new Set();
+    for (const e of zip.getEntries()) { const m = e.entryName.match(/^Payload\/([^/]+\.app)\//); if (m) apps.add(m[1]); }
+    if (!apps.size) return { ok: false, reason: 'noApp' };
+    const app = [...apps][0], base = app.replace(/\.app$/, '');
+    const direct = zip.getEntries().filter((e) => !e.isDirectory && e.entryName.startsWith(`Payload/${app}/`) && e.entryName.split('/').length === 3);
+    let exe = direct.find((e) => e.entryName.endsWith('/' + base));
+    if (!exe) exe = direct.filter((e) => e.header.size > 4096).sort((a, b) => b.header.size - a.header.size)[0];
+    if (!exe) return { ok: false, reason: 'noExe' };
+    const data = exe.getData();
+    const arm64 = machoSlices(data).filter((s) => s.cpu === 0x0100000c);
+    if (!arm64.length) return { ok: false, reason: 'no64', name: app };
+    if (cryptid(data, arm64[0].off)) return { ok: false, reason: 'fairplay', name: app };
+    return { ok: true, name: app, size: fs.statSync(file).size };
+  } catch (e) { return { ok: false, reason: 'unreadable', detail: String(e.message || e) }; }
+}
+ipcMain.handle('ipa:check', async (_e, file) => checkIpa(file));
+ipcMain.handle('ipa:serve', async (_e, files) => {
+  if (ipaServer) { ipaServer.close(); ipaServer = null; }
+  for (const k of Object.keys(served)) delete served[k];
+  files.forEach((f, i) => { served[`/${i + 1}.ipa`] = f; });
+  return new Promise((resolve) => {
+    ipaServer = http.createServer((req, res) => {
+      const f = served[req.url];
+      if (!f) { res.writeHead(404); res.end(); return; }
+      const size = fs.statSync(f).size;
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': size });
+      fs.createReadStream(f).pipe(res);
+      log(`sent ${path.basename(f)} (${size} bytes) to ${req.socket.remoteAddress}`);
+    });
+    ipaServer.on('error', (e) => resolve({ ok: false, error: String(e.message) }));
+    // only on the USB network of the phone, never on other networks
+    ipaServer.listen(IPA_PORT, IPA_HOST, () => resolve({ ok: true, urls: Object.keys(served).map((k) => `http://${IPA_HOST}:${IPA_PORT}${k}`) }));
+  });
+});
+ipcMain.handle('ipa:stop', async () => { if (ipaServer) { ipaServer.close(); ipaServer = null; } return true; });
 
 ipcMain.handle('link', async (_e, url) => {
   if (/^https:\/\/(developer\.android\.com|github\.com)\//.test(url)) { await shell.openExternal(url); return true; }
