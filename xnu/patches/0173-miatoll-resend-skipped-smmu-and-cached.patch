@@ -1,0 +1,76 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -431,11 +431,21 @@
+ #define SM_HOST_GLOBAL  0xfffeu
+ 
+ static vm_offset_t sm_smem;
++
++/*
++ * 0173 (0167 was skipped by the CI): the SMMU is mapped in two small pieces (global pages, context banks 0-3): one 768 KiB
++ * ml_io_map() panics KERN_NO_SPACE (kmem_alloc_contig_guard from io_map, backtrace in logs/recovery-0172.txt). The bank
++ * accessors of wlan_smmu_bypass() are written against one linear mapping, so accesses inside the window
++ * [sm_win_base, +sm_win_len) go to the real mapping sm_win_real; all others are plain.
++ */
++static vm_offset_t sm_win_base, sm_win_real;
++static vm_size_t sm_win_len;
++#define SM_XLAT(a) (((a) - sm_win_base) < sm_win_len ? sm_win_real + ((a) - sm_win_base) : (a))
+ 
+ static inline uint32_t
+ sm_r32(vm_offset_t a)
+ {
+-	return *(volatile uint32_t *)a;
++	return *(volatile uint32_t *)SM_XLAT(a);
+ }
+ 
+ static inline uint16_t
+@@ -518,7 +528,7 @@
+ static inline void
+ sm_w32(vm_offset_t a, uint32_t v)
+ {
+-	*(volatile uint32_t *)a = v;
++	*(volatile uint32_t *)SM_XLAT(a) = v;
+ }
+ 
+ static inline void
+@@ -2498,8 +2508,15 @@
+ 	 * 0166: ml_io_map() is never undone and the probe runs twice per boot (two firmware starts): each call took
+ 	 * another 768 KiB of the kernel map, and the second one panicked kmem_alloc(786432) KERN_NO_SPACE with the GPU on.
+ 	 */
+-	static vm_offset_t smmu_mapped;
+-	vm_offset_t g = smmu_mapped ? smmu_mapped : (smmu_mapped = ml_io_map(SMMU_PA, cbbase + ncb * pg));
++	static vm_offset_t smmu_lo, smmu_cb;
++	if (!smmu_lo || !smmu_cb) {
++		smmu_lo = ml_io_map(SMMU_PA, 2 * pg);
++		smmu_cb = ml_io_map(SMMU_PA + cbbase, 4 * pg);
++	}
++	vm_offset_t g = smmu_lo && smmu_cb ? smmu_lo : 0;
++	sm_win_base = g + cbbase;
++	sm_win_len = 4 * pg;
++	sm_win_real = smmu_cb;
+ 	printf("SWEET WLSMMU: mapped at %p\n", (void *)g);
+ 	touch_wait(300);
+ 	if (!g || !nsmr || !ncb) {
+@@ -2609,7 +2626,8 @@
+ 		 * S2CR type is bits 17:16: 0 FAULT, 1 BYPASS, 2 TRANSLATE (0141 wrote the bare bank number = FAULT, so its
+ 		 * shared-bank rule could never translate); the quirk path is TRANSLATE to the boot loader's bypass bank.
+ 		 */
+-		uint32_t rule = quirk ? ((2u << 16) | ((uint32_t)shared & 0xffu)) : ((1u << 16) | 0xffu);
++		/* 0173 (0165 was skipped by the CI): S2CR type 0 TRANSLATE, 1 BYPASS, 2 FAULT; 0162 wrote 2 = FAULT */
++		uint32_t rule = quirk ? ((uint32_t)shared & 0xffu) : ((1u << 16) | 0xffu);
+ 		printf("SWEET WLSMMU: writing S2CR%d %#x (type %u) and SMR%d 0x800100c0\n", smr, rule, (rule >> 16) & 3, smr);
+ 		touch_wait(300);
+ 		sm_w32(g + 0xc00 + 4 * (uint32_t)smr, rule);
+diff --git a/iokit/Kernel/arm/RedwoodGPU.cpp b/iokit/Kernel/arm/RedwoodGPU.cpp
+--- a/iokit/Kernel/arm/RedwoodGPU.cpp
++++ b/iokit/Kernel/arm/RedwoodGPU.cpp
+@@ -394,7 +394,8 @@
+ 	RedwoodGPU * gpu;
+ 	uint32_t cached = 0;
+ 
+-	gGPUCached = PE_parse_boot_argn("gpu_cached", &cached, sizeof(cached)) && cached != 0;
++	/* 0173 (0157 was skipped by the CI): cached memory by default; gpu_cached=0 is write-combined */
++	gGPUCached = !PE_parse_boot_argn("gpu_cached", &cached, sizeof(cached)) || cached != 0;
+ 	PE_parse_boot_argn("touch_lat", &gWaitLines, sizeof(gWaitLines));
+ 	PE_parse_boot_argn("gpu_keep", &gGPUKeep, sizeof(gGPUKeep));
+ 	PE_parse_boot_argn("gpu_trace_ms", &gTraceSlow, sizeof(gTraceSlow));

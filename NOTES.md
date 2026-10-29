@@ -861,3 +861,8 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - The kmem_alloc(786432) KERN_NO_SPACE panic was a different bug: 12 CE rings x 32 x 2 KiB contiguous (fixed in 0168, per-ring 64 KiB).
 - 0169 (refuse user nexus, sk_user_nexus=1 allows) turned out unrelated (rapportd was a red herring); consider reverting it.
 - Boot arg ufslogsecs=1 makes the ring flush every second; logs/recovery-0171.txt has the first panic text.
+- **CI skips patches that do not apply, silently** ("Skipping patch ... (already upstream" in the run log): 0157 (cached default), 0165 (S2CR type) and
+  0167 (small SMMU maps) were never in any kernel. 0173 re-does them against the real tree (taken from the `xnu-buildtree` artifact).
+  After every push: `gh run view RID --log | grep "Skipping patch"` and compare with the list of mine.
+- logs/recovery-0172.txt: after 0172 the GPU makes buffers (23 gemNew in a row), modem reaches mission mode, then PANIC kmem_alloc(786432):
+  sm_thread -> wlfw_bringup -> io_map -> kmem_alloc_contig_guard = the 768 KiB SMMU ml_io_map (what 0167/0173 splits).
