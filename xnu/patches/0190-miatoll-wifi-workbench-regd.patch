@@ -1,0 +1,94 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3000,6 +3000,7 @@ static struct wl_bss wl_bss[48];
+ static volatile unsigned wl_nbss;
+ static volatile int wl_full_reorder;
+ static volatile int wl_never;
++static uint32_t wl_dwell_act = 0x50, wl_dwell_pas = 0x150;
+ static uint32_t wl_arg_pdev, wl_arg_reorder;     /* 0189: boot-args wlpdev=1, wlreorder=1 switch on what 0187 added (the firmware went silent with both) */
+ static uint32_t wl_ev_id[24], wl_ev_cnt[24];
+ 
+@@ -3283,7 +3284,7 @@ wl_wmi_scan(void)
+ 	s[2] = 0;                               /* vdev */
+ 	s[3] = 1;                               /* priority low */
+ 	s[4] = 0x1f;                            /* started, completed, bss channel, foreign channel, dequeued */
+-	s[5] = 50; s[6] = 150; s[7] = 50; s[8] = 500;
++	s[5] = wl_dwell_act; s[6] = wl_dwell_pas; s[7] = 50; s[8] = 500;
+ 	s[12] = 20000; s[13] = 5;
+ 	s[14] = wl_scan_flags;                  /* bcast probe req, cck, ofdm, chan stat; filter bit inverted as ath10k does */
+ 	s[16] = 0;                              /* channels: all */
+@@ -3383,7 +3384,7 @@ wl_write_networks(void)
+  *   wl ev              counts of the events received
+  *   wl last            the answer of the last command
+  */
+-static char wl_cmd_q[200];
++static char wl_cmd_q[1100];
+ static volatile int wl_cmd_full;
+ static char wl_last[420] = "no command yet\n";
+ 
+@@ -3445,6 +3446,23 @@ wl_do_cmd(const char *c)
+ 	static uint8_t body[320];
+ 	wl_last[0] = 0;
+ 	if (strncmp(c, "scan", 4) == 0) {
++		{
++			/* 0190: "scan [FLAGS [DWELL_ACTIVE [DWELL_PASSIVE]]]", hex; flags 3e is the default, 1e what ath10k sends (TLV inverts bit 0x20) */
++			const char *q = c + 4;
++			while (*q == ' ') {
++				++q;
++			}
++			if (*q) {
++				wl_scan_flags = wl_num(&q);
++				while (*q == ' ') {
++					++q;
++				}
++				if (*q) {
++					wl_dwell_act = wl_num(&q);
++					wl_dwell_pas = wl_num(&q);
++				}
++			}
++		}
+ 		wl_nbss = 0;
+ 		wl_scan_done = 0;
+ 		wl_scan_failed = 0;
+@@ -3482,6 +3500,31 @@ wl_do_cmd(const char *c)
+ 		int e = wl_wmi_send(0x4003u, b, 12);
+ 		snprintf(wl_last, sizeof(wl_last), "pdev param %u = %u, error %d\n", pv[0], pv[1], e);
+ 		wl_wmi_wait(1000, &wl_never);
++	} else if (strncmp(c, "regd", 4) == 0) {
++		/* 0190: WMI_TLV_PDEV_SET_REGDOMAIN (ath10k_regd_update sends it after the channel list): "regd [RD [CTL2G [CTL5G]]]", hex,
++		 * default FCC1_FCCA (0x10) with the FCC conformance limits (0x10); 0x60 would be the world domain */
++		const char *q = c + 4;
++		uint32_t rd = 0x10, c2 = 0x10, c5 = 0x10;
++		while (*q == ' ') {
++			++q;
++		}
++		if (*q) {
++			rd = wl_num(&q);
++			while (*q == ' ') {
++				++q;
++			}
++			if (*q) {
++				c2 = wl_num(&q);
++				c5 = wl_num(&q);
++			}
++		}
++		uint32_t v[6] = {0, rd, rd, rd, c2, c5};
++		uint8_t b[32];
++		uint8_t *q2 = wl_tlv(b, 81, 24);                /* WMI_TLV_TAG_STRUCT_PDEV_SET_REGDOMAIN_CMD */
++		memcpy(q2, v, 24);
++		int e = wl_wmi_send(0x4001u, b, 28);            /* WMI_TLV_PDEV_SET_REGDOMAIN_CMDID */
++		snprintf(wl_last, sizeof(wl_last), "regdomain %#x ctl %#x/%#x sent, error %d\n", rd, c2, c5, e);
++		wl_wmi_wait(1000, &wl_never);
+ 	} else if (strncmp(c, "chan", 4) == 0) {
+ 		int e = wl_wmi_chan_list();
+ 		snprintf(wl_last, sizeof(wl_last), "channel list sent, error %d\n", e);
+@@ -3493,7 +3536,7 @@ wl_do_cmd(const char *c)
+ 		}
+ 		snprintf(wl_last + n, sizeof(wl_last) - n, "\n");
+ 	} else {
+-		snprintf(wl_last, sizeof(wl_last), "unknown: scan, nets, raw CMD BODY, pdev ID VALUE, chan, ev, last\n");
++		snprintf(wl_last, sizeof(wl_last), "unknown: scan [FLAGS [DA [DP]]], nets, raw CMD BODY, pdev ID VALUE, regd [RD [C2 C5]], chan, ev, last\n");
+ 	}
+ 	printf("SWEET WIFI: wl %s -> %s", c, wl_last);
+ }
