@@ -72,6 +72,13 @@ normal ci-boot.sh images stay unchanged. Pieces:
 5. USB Storage (mass storage of userdata) needs UFS WRITE: later, only with the user's OK.
 Test: `fastboot boot shim/out/shim-boot-menu.img` only (never flash without the user's OK).
 
+## Handoff 2026-10-30 (evening): HTT answers on CE1 (0197)
+- 0196 sent the HTT version request on CE3 (the WMI pipe) and got no answer. ath10k snoc `svc_to_pipe_map`: HTT data is CE4 (tx) / CE1 (rx). 0197 sends on CE4:
+  `wl htt` -> `SWEET WLCE: endpoint 2 (CE1) rx 12 bytes: 02 00 04 00 00 00 00 00 | 00 59 03 00 ...` = HTT_T2H VERSION_CONF (observation; minor/major read as 0x59/3 if ath10k's htt_ver_resp layout holds - guess).
+- Test needs `wifidbg=1` (the `wl ...` UDP commands are only served by wl_service() then): `EXTRA_ARGS="gpu=1 gpu_with_modem=1 adreno_pause=0 wifidbg=1" tools/wl-cycle.sh`.
+- Still 0 access points after `wl scan`; WMI events seen: 0x3001 x45, 0x4002 x23, no MGMT_RX. NEXT: HTT rx ring setup (ath10k htt_rx_ring_cfg 64-bit variant: rx ring in host memory + fw idx shadow, filled buffers), then parse RX_IND / MGMT frames, then show networks to iOS.
+- userdata was reflashed twice today from `research/ipsw-x/ios16-root-shared.img` (Oct 24, no live tweaks) - the second time via `tools/add-trollstore-offline.sh` (clone + TrollStore Persistence Helper, MiatollTools removed). Live phone edits made before are gone; the permanent boot partition holds `shim-boot-wl196.img`.
+
 ## Handoff 2026-10-27 (later 3): 0161 panic-backtrace patch pushed (CI run 40497366981)
 - `0161-miatoll-panic-backtraces.patch`, 3 files: (a) `osfmk/vm/vm_kern.c __kmem_failed_panic` prints map/size/flags/kr +
   a 16-frame fp-chain backtrace (kern/backtrace.h, already included) BEFORE the panic; (b) `osfmk/arm64/arm_vm_init.c`
