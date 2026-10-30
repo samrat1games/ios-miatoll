@@ -178,6 +178,30 @@ def perf_prefs(root):
     print('Reduce Motion + Reduce Transparency on (CPU rendering)')
 
 
+def trollstore(root, deb):
+    """TrollStore's Persistence Helper (the .deb of opa334, rootless layout) in /Applications, root by path (patch 0192).
+    Its "Install TrollStore" button downloads TrollStore itself over the USB network; TrollStore then installs IPAs.
+    It replaces MiatollTools, which is not copied then (--keep-tools to still install it)."""
+    import subprocess, tempfile
+    tmp = tempfile.mkdtemp()
+    subprocess.run(['ar', 'x', os.path.abspath(deb)], cwd=tmp, check=True)
+    data = [f for f in os.listdir(tmp) if f.startswith('data.tar')][0]
+    subprocess.run(['tar', '-xf', data], cwd=tmp, check=True)
+    src = os.path.join(tmp, 'var/jb/Applications/TrollStorePersistenceHelper.app')
+    dst = os.path.join(root, 'Applications', 'TrollStorePersistenceHelper.app')
+    shutil.rmtree(dst, ignore_errors=True)
+    subprocess.run(['ditto', '--nopreserveHFSCompression', src, dst], check=True)
+    for d, dn, fn in os.walk(dst):
+        for x in dn + fn:
+            os.chown(os.path.join(d, x), 0, 0)
+    os.chown(dst, 0, 0)
+    for x in ('trollstorehelper', 'TrollStorePersistenceHelper'):
+        os.chmod(os.path.join(dst, x), 0o4755)
+    shutil.rmtree(os.path.join(root, 'Applications', 'MiatollTools.app'), ignore_errors=True)
+    shutil.rmtree(tmp, ignore_errors=True)
+    print('TrollStore Persistence Helper installed; MiatollTools removed')
+
+
 def main():
     root = sys.argv[1]
     if not os.path.isdir(os.path.join(root, 'System/Library/xpc')):
@@ -193,7 +217,11 @@ def main():
         netplugin(root)
     if '--no-apps' not in sys.argv:
         staged_apps(root)
-        sweettools(root)
+        if '--keep-tools' in sys.argv:
+            sweettools(root)
+        else:
+            debs = [a for a in sys.argv[2:] if a.endswith('.deb')]
+            trollstore(root, debs[0] if debs else os.path.join(HERE, '..', 'apps', 'trollstorehelper.deb'))
 
 
 if __name__ == '__main__':

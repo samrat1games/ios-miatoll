@@ -1,0 +1,19 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -1584,9 +1584,13 @@
+ 	 * writes /Applications) never applied. That one executable, by its exact path, runs as root.
+ 	 */
+ 	if (!error) {
+-		char sweet_path[64];
++		char sweet_path[96];
+ 		int sweet_len = sizeof(sweet_path);
+ 		if (vn_getpath(imgp->ip_vp, sweet_path, &sweet_len) == 0 &&
+-		    strcmp(sweet_path, "/Applications/MiatollTools.app/MiatollTools") == 0) {
++		    /* TrollStore's helper does the same job (installs apps, registers them) and needs root the same way */
++		    (strcmp(sweet_path, "/Applications/MiatollTools.app/MiatollTools") == 0 ||
++		    strcmp(sweet_path, "/Applications/TrollStorePersistenceHelper.app/trollstorehelper") == 0 ||
++		    strcmp(sweet_path, "/Applications/TrollStorePersistenceHelper.app/TrollStorePersistenceHelper") == 0)) {
+ 			proc_update_label(p, false, ^kauth_cred_t (kauth_cred_t my_cred) {
+ 				return kauth_cred_setresuid(my_cred, 0, 0, 0, KAUTH_UID_NONE);
+ 			});
