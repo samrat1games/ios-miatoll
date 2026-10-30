@@ -1,0 +1,16 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 77a5830..4803dd1 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3548,8 +3548,9 @@ wl_do_cmd(const char *c)
+ 			hp[2] = 4;                              /* payload length: msg type + padding */
+ 			hp[5] = wl_wseq++;
+ 			wl_sync(wl_wtx, wl_wtx_pa, 12);
+-			int e = wl_ce_send(3, wl_wtx_pa, 12, 0);
+-			snprintf(wl_last, sizeof(wl_last), "HTT version request sent on endpoint %d, error %d\n", (int)wl_htt_eid, e);
++			/* 0197: the HTT data service is on CE4 for transmit and CE1 for receive (ath10k snoc svc_to_pipe_map), not on the WMI pipe CE3 */
++			int e = wl_ce_send(4, wl_wtx_pa, 12, 0);
++			snprintf(wl_last, sizeof(wl_last), "HTT version request sent on endpoint %d (CE4), error %d\n", (int)wl_htt_eid, e);
+ 			wl_wmi_wait(1500, &wl_never);
+ 		}
+ 	} else if (strncmp(c, "chan", 4) == 0) {
