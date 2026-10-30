@@ -1,0 +1,94 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+index 4803dd1..6a6ba33 100644
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3586,6 +3586,81 @@ wl_service(void)
+ 	}
+ }
+ 
++/*
++ * 0199: HTT receive ring, after ath10k_htt_send_rx_ring_cfg_64 (ISC licence) with the WCN3990 descriptor (struct htt_rx_desc_v2,
++ * 360 bytes; offsets in 4-byte words computed from ath10k's own structs). Without host buffers the firmware has nowhere to put
++ * received frames. HTT goes out on CE4; answers (RX_IN_ORD_PADDR_IND and friends) come in on CE1 and are logged as "endpoint N".
++ */
++#define WL_HTT_RING_N   128u
++#define WL_HTT_BUF_SZ   2048u
++static vm_offset_t wl_htt_ring, wl_htt_bufs, wl_htt_idx, wl_htt_txb;
++static uint64_t wl_htt_ring_pa, wl_htt_bufs_pa, wl_htt_idx_pa, wl_htt_txb_pa;
++
++static int
++wl_htt_send(const uint8_t *msg, uint16_t len)
++{
++	uint8_t *h = (uint8_t *)wl_htt_txb;
++	memset(h, 0, 8u + len);
++	h[0] = (uint8_t)wl_htt_eid;
++	h[2] = (uint8_t)len;
++	h[3] = (uint8_t)(len >> 8);
++	h[5] = wl_wseq++;
++	memcpy(h + 8, msg, len);
++	wl_sync(wl_htt_txb, wl_htt_txb_pa, 8u + len);
++	return wl_ce_send(4, wl_htt_txb_pa, (uint16_t)(8u + len), 0);
++}
++
++static int
++wl_htt_rx_setup(void)
++{
++	if (wl_htt_eid < 0) {
++		return ENOENT;
++	}
++	if (!wl_htt_ring) {
++		if (wl_alloc(0x1000, &wl_htt_ring, &wl_htt_ring_pa) || wl_alloc(WL_HTT_RING_N * WL_HTT_BUF_SZ, &wl_htt_bufs, &wl_htt_bufs_pa) ||
++		    wl_alloc(0x1000, &wl_htt_idx, &wl_htt_idx_pa) || wl_alloc(0x1000, &wl_htt_txb, &wl_htt_txb_pa)) {
++			wl_htt_ring = 0;
++			return ENOMEM;
++		}
++		uint64_t *r = (uint64_t *)wl_htt_ring;
++		uint32_t fill = WL_HTT_RING_N / 2 - 1;          /* HTT_RX_RING_FILL_LEVEL */
++		for (uint32_t i = 0; i < fill; ++i) {
++			r[i] = wl_htt_bufs_pa + (uint64_t)i * WL_HTT_BUF_SZ;
++		}
++		*(volatile uint32_t *)wl_htt_idx = fill;
++		wl_sync(wl_htt_ring, wl_htt_ring_pa, WL_HTT_RING_N * 8u);
++		wl_sync(wl_htt_idx, wl_htt_idx_pa, 4);
++	}
++	uint8_t v[4] = {0, 0, 0, 0};                            /* HTT_H2T_MSG_TYPE_VERSION_REQ */
++	int e1 = wl_htt_send(v, 4);
++	for (unsigned ms = 0; ms < 500; ms += 10) {
++		wl_ce_poll();
++		touch_wait(10);
++	}
++	uint8_t m[48];
++	memset(m, 0, sizeof(m));
++	m[0] = 2;                                               /* HTT_H2T_MSG_TYPE_RX_RING_CFG */
++	m[1] = 1;                                               /* one ring */
++	uint64_t a64 = wl_htt_idx_pa, b64 = wl_htt_ring_pa;
++	memcpy(m + 4, &a64, 8);                                 /* fw_idx_shadow_reg_paddr */
++	memcpy(m + 12, &b64, 8);                                /* rx_ring_base_paddr */
++	uint16_t f[10] = {
++		WL_HTT_RING_N, WL_HTT_BUF_SZ, 0xffff, (uint16_t)(WL_HTT_RING_N / 2 - 1),   /* len, bufsize, flags (all), fw_idx_init_val */
++		74, 90, 27, 37, 4, 26                           /* mac80211 hdr, msdu payload, ppdu start/end, mpdu start/end */
++	};
++	uint16_t g[4] = {7, 12, 1, 2};                          /* msdu start, msdu end, rx attention, frag info */
++	memcpy(m + 20, f, sizeof(f));
++	memcpy(m + 40, g, sizeof(g));
++	int e2 = wl_htt_send(m, 48);
++	printf("SWEET HTT: version request error %d, rx ring cfg error %d (ring %#llx idx %#llx, %u buffers of %u)\n", e1, e2,
++	    (unsigned long long)wl_htt_ring_pa, (unsigned long long)wl_htt_idx_pa, WL_HTT_RING_N / 2 - 1, WL_HTT_BUF_SZ);
++	for (unsigned ms = 0; ms < 500; ms += 10) {
++		wl_ce_poll();
++		touch_wait(10);
++	}
++	return e2;
++}
++
+ /* the whole WMI bring-up after HTC setup complete; every step says what it did */
+ static int
+ wl_wmi_bringup(void)
+@@ -3605,6 +3680,7 @@ wl_wmi_bringup(void)
+ 		return ETIMEDOUT;
+ 	}
+ 	printf("SWEET WMI: vdev mac %02x:%02x:%02x:%02x:%02x:%02x\n", wl_mac[0], wl_mac[1], wl_mac[2], wl_mac[3], wl_mac[4], wl_mac[5]);
++	(void)wl_htt_rx_setup();                           /* 0199 */
+ 	{
+ 		/* 0187: the pdev parameters ath10k_start sets (pmf qos, dynamic bw, idle ps, arp ac override, ani) */
+ 		static const uint32_t pp[5][2] = {{34, 1}, {10, 1}, {44, 1}, {35, 0}, {37, 1}};
