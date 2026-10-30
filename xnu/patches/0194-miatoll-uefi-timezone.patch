@@ -1,0 +1,15 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3300,5 +3300,11 @@
+ 	} else if (!PE_parse_boot_argn("sweetrtc", &off, sizeof(off)) || off == 0) {
+ 		off = SM_RTC_FLOOR - secs;
+ 	}
++	/* 0194: boot-arg sweettz=<minutes east of UTC> from the UEFI menu: iOS has no time zone database here, so the clock it
++	 * starts from is shifted by it (a time set later from the network replaces it) */
++	int tzm = 0;
++	if (PE_parse_boot_argn("sweettz", &tzm, sizeof(tzm)) && tzm > -1000 && tzm < 1000) {
++		off = (uint64_t)((int64_t)off + (int64_t)tzm * 60);
++	}
+ 	sm_rtc_off = (int64_t)off;
+ 	uint64_t cal = (uint64_t)secs + off;

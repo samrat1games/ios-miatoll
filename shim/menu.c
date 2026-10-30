@@ -52,7 +52,7 @@ static uint64_t frq(void) { uint64_t v; __asm__ volatile("mrs %0, cntfrq_el0" : 
 
 /* ------------------------------------------------------------------ keys */
 
-static uint16_t pon_apid = NO_APID, gpio_apid = NO_APID;
+static uint16_t pon_apid = NO_APID, gpio_apid = NO_APID, rtc_apid = NO_APID, sdam_apid = NO_APID;
 
 static uint16_t find_apid(uint16_t ppid, uint32_t count)
 {
@@ -124,7 +124,109 @@ static int keys_init(void)
 		return 0;
 	pon_apid = find_apid(0x008, count);
 	gpio_apid = find_apid(0x4c1, count);
+	rtc_apid = find_apid(0x060, count);	/* PM6150 RTC (0x6048..0x604b: seconds) */
+	sdam_apid = find_apid(0x0b6, count);	/* QG SDAM (0xb646 valid, 0xb647 SOC %, 0xb654 time stored) */
 	return pon_apid != NO_APID;
+}
+
+/* ------------------------------------------------------------------ status bar data, time zone */
+
+static int tz_min = 300;	/* minutes east of UTC, boot-arg sweettz= */
+static int bright = 60;		/* backlight in percent, boot-arg sweetbright= */
+static int wifitest;		/* iOS starts with the Wi-Fi workbench (wifidbg=1) */
+static char tzbuf[48];
+
+static char *put_uint(char *p, unsigned v)
+{
+	char t[12];
+	int n = 0;
+	do {
+		t[n++] = (char)('0' + v % 10);
+		v /= 10;
+	} while (v);
+	while (n)
+		*p++ = t[--n];
+	return p;
+}
+
+static char *put_2(char *p, unsigned v)
+{
+	*p++ = (char)('0' + v / 10 % 10);
+	*p++ = (char)('0' + v % 10);
+	return p;
+}
+
+/* "UTC+5" (city 0) or "UTC+5 - Tashkent, Almaty" */
+static const char *tz_text(int city)
+{
+	char *p = tzbuf;
+	int m = tz_min, a = m < 0 ? -m : m;
+	*p++ = 'U'; *p++ = 'T'; *p++ = 'C';
+	*p++ = m < 0 ? '-' : '+';
+	p = put_uint(p, (unsigned)(a / 60));
+	if (a % 60) {
+		*p++ = ':';
+		p = put_2(p, (unsigned)(a % 60));
+	}
+	const char *c = "";
+	if (city && a % 60 == 0) {
+		int h = m / 60;
+		c = h == -8 ? "Los Angeles" : h == -5 ? "New York" : h == 0 ? "London" : h == 1 ? "Berlin" : h == 2 ? "Kyiv" :
+		    h == 3 ? "Moscow" : h == 4 ? "Dubai" : h == 5 ? "Tashkent, Almaty" : h == 6 ? "Dhaka" : h == 7 ? "Bangkok" :
+		    h == 8 ? "Beijing" : h == 9 ? "Tokyo" : h == 10 ? "Sydney" : "";
+	} else if (city && m == 330) {
+		c = "Mumbai";
+	}
+	if (*c) {
+		*p++ = ' '; *p++ = '-'; *p++ = ' ';
+		while (*c)
+			*p++ = *c++;
+	}
+	*p = 0;
+	return tzbuf;
+}
+
+/* The PMIC counter plus the offset the kernel boots with (sweetrtc in the payload) is the clock iOS starts from. */
+#define RTC_REAL_MIN	1767225600u	/* the counter itself is a calendar time */
+#define RTC_OFFSET	1786732635u
+
+static char clk[8];
+
+/* "HH:MM" local time, or "--:--" when the PMIC clock cannot be read */
+static const char *clock_text(void)
+{
+	uint8_t b[4];
+	for (int i = 0; i < 4; ++i)
+		if (!key_read(rtc_apid, (uint16_t)(0x48 + i), &b[i])) {
+			clk[0] = clk[1] = clk[3] = clk[4] = '-';
+			clk[2] = ':';
+			clk[5] = 0;
+			return clk;
+		}
+	uint32_t s = (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+	int64_t t = (int64_t)(s >= RTC_REAL_MIN ? s : (uint64_t)s + RTC_OFFSET) + (int64_t)tz_min * 60;
+	unsigned d = (unsigned)(t % 86400);
+	char *p = put_2(clk, d / 3600);
+	*p++ = ':';
+	p = put_2(p, d / 60 % 60);
+	*p = 0;
+	return clk;
+}
+
+/* battery percent from the fuel gauge's SDAM, the same check the kernel makes (valid, <= 100, written < 12 h ago); -1 when unknown */
+static int battery_soc(void)
+{
+	uint8_t valid, soc, t[4], r[4];
+	if (!key_read(sdam_apid, 0x46, &valid) || !key_read(sdam_apid, 0x47, &soc) || valid != 1 || soc > 100)
+		return -1;
+	for (int i = 0; i < 4; ++i)
+		if (!key_read(sdam_apid, (uint16_t)(0x54 + i), &t[i]) || !key_read(rtc_apid, (uint16_t)(0x48 + i), &r[i]))
+			return -1;
+	uint32_t stored = (uint32_t)t[0] | ((uint32_t)t[1] << 8) | ((uint32_t)t[2] << 16) | ((uint32_t)t[3] << 24);
+	uint32_t now = (uint32_t)r[0] | ((uint32_t)r[1] << 8) | ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
+	if (now < stored || now - stored > 12u * 3600u)
+		return -1;
+	return soc;
 }
 
 /* ------------------------------------------------------------------ drawing */
@@ -283,9 +385,9 @@ static int lang;	/* 0 English, 1 Russian, 2 Ukrainian, 3 German, 4 Spanish, 5 Fr
 
 #define L6(en, ru, ua, de, es, fr) (lang == 1 ? ru : lang == 2 ? ua : lang == 3 ? de : lang == 4 ? es : lang == 5 ? fr : en)
 
-enum { P_MAIN, P_SET, P_TEST, P_LANG, P_ABOUT };
+enum { P_MAIN, P_SET, P_TEST, P_LANG, P_ABOUT, P_TZ };
 
-static int page_rows(int p) { return p == P_MAIN ? 5 : p == P_SET ? 7 : p == P_TEST ? 8 : p == P_LANG ? NLANG + 1 : 5; }
+static int page_rows(int p) { return p == P_MAIN ? 5 : p == P_SET ? 8 : p == P_TEST ? 8 : p == P_LANG ? NLANG + 1 : 5; }
 static int card_y(int p) { return p == P_ABOUT ? 1290 : CARD_Y; }
 
 static const char *page_title(int p)
@@ -293,7 +395,8 @@ static const char *page_title(int p)
 	return p == P_MAIN ? "iMiatoll UEFI" :
 	    p == P_SET ? L6("iOS Settings", "Настройки iOS", "Налаштування iOS", "iOS-Einstellungen", "Ajustes de iOS", "Réglages iOS") :
 	    p == P_TEST ? L6("Tests", "Тесты", "Тести", "Tests", "Pruebas", "Tests") :
-	    p == P_LANG ? L6("Language", "Язык", "Мова", "Sprache", "Idioma", "Langue") : "About iMiatoll";
+	    p == P_LANG ? L6("Language", "Язык", "Мова", "Sprache", "Idioma", "Langue") :
+	    p == P_TZ ? L6("Time zone", "Часовой пояс", "Часовий пояс", "Zeitzone", "Zona horaria", "Fuseau horaire") : "About iMiatoll";
 }
 
 static const char *page_sub(int p)
@@ -313,6 +416,10 @@ static const char *page_sub(int p)
 	if (p == P_LANG)
 		return L6("The menu language.", "Язык меню.", "Мова меню.", "Die Sprache des Menüs.", "El idioma del menú.",
 		    "La langue du menu.");
+	if (p == P_TZ)
+		return L6("The time iOS shows. Applied at the next iOS boot.", "Время в iOS. Применяется при следующей загрузке.",
+		    "Час в iOS. Застосовується при наступному запуску.", "Die Zeit in iOS. Gilt beim nächsten Start.",
+		    "La hora de iOS. Se aplica en el próximo inicio.", "L'heure d'iOS. Appliqué au prochain démarrage.");
 	return L6("Meet Mitlk, the mascot.", "Знакомьтесь: Mitlk, наш маскот.", "Знайомтесь: Mitlk, наш маскот.",
 	    "Das ist Mitlk, das Maskottchen.", "Te presentamos a Mitlk, la mascota.", "Voici Mitlk, la mascotte.");
 }
@@ -346,7 +453,13 @@ static const char *row_title(int p, int i)
 	if (p == P_SET)
 		return i == 0 ? "GPU" : i == 1 ? L6("GPU drawing", "Рисование GPU", "Малювання GPU", "GPU-Zeichnen", "Dibujo por GPU", "Dessin GPU") :
 		    i == 2 ? "Metal" : i == 3 ? L6("Wi-Fi (modem)", "Wi-Fi (модем)", "Wi-Fi (модем)", "WLAN (Modem)", "Wi-Fi (módem)", "Wi-Fi (modem)") :
-		    i == 4 ? "Bluetooth" : i == 5 ? L6("Tests", "Тесты", "Тести", "Tests", "Pruebas", "Tests") : back_text();
+		    i == 4 ? "Bluetooth" : i == 5 ? page_title(P_TZ) :
+		    i == 6 ? L6("Tests", "Тесты", "Тести", "Tests", "Pruebas", "Tests") : back_text();
+	if (p == P_TZ)
+		return i == 0 ? page_title(P_TZ) : i == 1 ? L6("Earlier, 1 hour", "Раньше на 1 час", "Раніше на 1 годину", "1 Stunde früher",
+		    "1 hora antes", "1 heure plus tôt") :
+		    i == 2 ? L6("Later, 1 hour", "Позже на 1 час", "Пізніше на 1 годину", "1 Stunde später", "1 hora después", "1 heure plus tard") :
+		    i == 3 ? L6("Half an hour", "Полчаса", "Пів години", "Halbe Stunde", "Media hora", "Demi-heure") : back_text();
 	return i == 0 ? L6("Touch test", "Тест тача", "Тест тачу", "Touch-Test", "Prueba táctil", "Test tactile") :
 	    i == 1 ? L6("Buttons test", "Тест кнопок", "Тест кнопок", "Tastentest", "Prueba de botones", "Test des boutons") :
 	    i == 2 ? L6("Display test", "Тест дисплея", "Тест дисплея", "Displaytest", "Prueba de pantalla", "Test de l'écran") :
@@ -380,8 +493,12 @@ static const char *row_sub(int p, int i)
 		    "WCN3990 por el módem", "WCN3990 via le modem") :
 		    i == 4 ? L6("Not ready in the kernel", "Ядро пока не умеет", "Ядро поки не вміє", "Im Kernel noch nicht fertig",
 		    "Aún no está en el núcleo", "Pas encore dans le noyau") :
-		    i == 5 ? L6("Touch, buttons, display", "Тач, кнопки, дисплей", "Тач, кнопки, дисплей", "Touch, Tasten, Display",
+		    i == 5 ? tz_text(1) :
+		    i == 6 ? L6("Touch, buttons, display", "Тач, кнопки, дисплей", "Тач, кнопки, дисплей", "Touch, Tasten, Display",
 		    "Táctil, botones, pantalla", "Tactile, boutons, écran") : "";
+	if (p == P_TZ)
+		return i == 0 ? tz_text(1) : i == 3 ? L6("Add or remove 30 minutes", "Добавить или убрать 30 минут", "Додати або прибрати 30 хвилин",
+		    "30 Minuten dazu oder weg", "Sumar o quitar 30 minutos", "Ajouter ou retirer 30 minutes") : i == 4 ? "" : clock_text();
 	return i == 0 ? L6("Draw with a finger", "Рисуйте пальцем", "Малюйте пальцем", "Mit dem Finger zeichnen", "Dibuja con el dedo", "Dessine du doigt") :
 	    i == 1 ? L6("Volume and power keys", "Клавиши громкости и питания", "Клавіші гучності й живлення", "Lautstärke- und Ein-Taste",
 	    "Teclas de volumen y encendido", "Touches volume et marche") :
@@ -396,7 +513,18 @@ extern void menu_android(void);
 extern void menu_poweroff(void);
 
 static int opt[5] = { 1, 1, 0, 1, 0 };	/* GPU drawing works since gpu_trace_ms=0 (the driver slept 300 ms after every log line) */	/* GPU, GPU drawing, Metal, Wi-Fi, Bluetooth */
-static char args[128];
+static char args[176];
+
+static char *args_int(char *p, const char *key, int v)
+{
+	while (*key)
+		*p++ = *key++;
+	if (v < 0) {
+		*p++ = '-';
+		v = -v;
+	}
+	return put_uint(p, (unsigned)v);
+}
 
 static void build_args(void)
 {
@@ -411,6 +539,11 @@ static void build_args(void)
 		while (*s && p < args + sizeof(args) - 1)
 			*p++ = *s++;
 	}
+	if (wifitest)
+		for (const char *s = " wifidbg=1"; *s; )
+			*p++ = *s++;
+	p = args_int(p, " sweettz=", tz_min);
+	p = args_int(p, " sweetbright=", bright);
 	*p = 0;
 }
 
@@ -436,9 +569,11 @@ static int icon_id(int p, int i)
 		return ICON_GLOBE_52;
 	if (p == P_ABOUT)
 		return i == 0 ? ICON_CHECKMARK_CIRCLE_FILL_52 : i == 1 ? ICON_CPU_52 : i == 2 ? ICON_IPHONE_52 : ICON_GLOBE_52;
+	if (p == P_TZ)
+		return i == 0 ? ICON_GLOBE_52 : i == 1 ? ICON_CHEVRON_LEFT_52 : i == 2 ? ICON_CHEVRON_RIGHT_40 : ICON_CHECKMARK_CIRCLE_FILL_52;
 	if (p == P_SET)
 		return i == 0 ? ICON_CPU_52 : i == 1 ? ICON_PAINTBRUSH_52 : i == 2 ? ICON_CUBE_52 : i == 3 ? ICON_WIFI_52 :
-		    i == 4 ? ICON_DOT_RADIOWAVES_LEFT_AND_RIGHT_52 : ICON_CHECKMARK_CIRCLE_FILL_52;
+		    i == 4 ? ICON_DOT_RADIOWAVES_LEFT_AND_RIGHT_52 : i == 5 ? ICON_GLOBE_52 : ICON_CHECKMARK_CIRCLE_FILL_52;
 	return i == 0 ? ICON_HAND_POINT_UP_LEFT_52 : i == 1 ? ICON_KEYBOARD_52 : i == 2 ? ICON_DISPLAY_52 :
 	    i == 3 ? ICON_FLASHLIGHT_ON_FILL_52 : i == 4 ? ICON_WIFI_52 : i == 5 ? ICON_DOT_RADIOWAVES_LEFT_AND_RIGHT_52 :
 	    ICON_CUBE_52;
@@ -454,6 +589,8 @@ static int row_kind(int p, int i)
 	if (p == P_LANG && i < NLANG)
 		return i == lang ? 3 : 4;
 	if (p == P_ABOUT && i < 4)
+		return 4;
+	if (p == P_TZ && i == 0)
 		return 4;
 	return 0;
 }
@@ -566,9 +703,30 @@ static void draw_mitlk(int cx, int top)
 		}
 }
 
+/* ------------------------------------------------------------------ status bar and control centre */
+
+/* clock (PMIC RTC + time zone), signal bars and Wi-Fi (lit when the modem option is on), battery (fuel gauge SDAM, outline only when unknown) */
+static void draw_status(void)
+{
+	fill_rect(0, 0, FB_W, 66, BG);
+	text(CARD_X, 12, 4, clock_text(), INK, 1);
+	for (int k = 0; k < 4; ++k)
+		fill_round(690 + k * 18, 52 - (12 + k * 8), 11, 12 + k * 8, 4, opt[3] ? INK : OFFC);
+	icon(ICON_WIFI_52, 822, 34, opt[3] ? INK : OFFC);
+	int soc = battery_soc(), bx = 886;
+	fill_round(bx, 16, 74, 36, 11, INK);
+	fill_round(bx + 4, 20, 66, 28, 8, BG);
+	if (soc > 0) {
+		int w = 62 * soc / 100;
+		fill_round(bx + 6, 22, w < 12 ? 12 : w, 24, 6, soc <= 20 ? REDC : INK);
+	}
+	fill_rect(bx + 76, 27, 5, 14, INK);
+}
+
 static void draw_page(int p, int sel)
 {
 	fill_rect(0, 0, FB_W, FB_H, BG);
+	draw_status();
 	draw_top(p);
 	text(CARD_X, 300, 6, page_title(p), INK, 1);
 	const char *s = page_sub(p);
@@ -708,16 +866,113 @@ static void test_display(void)
 	}
 }
 
+static void cc_tile(int k, int ic, const char *s, int on)
+{
+	int x = CARD_X + (k % 2) * (CARD_W / 2 + 10), y = 520 + (k / 2) * 330, w = CARD_W / 2 - 10;
+	fill_round(x, y, w, 300, 54, on ? BLUEC : CARD);
+	icon(ic, x + w / 2, y + 105, on ? WHITEC : INK);
+	text(x + w / 2 - text_w(s, 4) / 2, y + 200, 4, s, on ? WHITEC : INK, 1);
+}
+
+static void cc_slider(void)
+{
+	char lab[40], *p = lab;
+	const char *w = L6("Brightness", "Яркость", "Яскравість", "Helligkeit", "Brillo", "Luminosité");
+	while (*w && p < lab + 24)
+		*p++ = *w++;
+	*p++ = ' ';
+	p = put_uint(p, (unsigned)bright);
+	*p++ = '%';
+	*p = 0;
+	fill_rect(0, 1170, FB_W, 260, BG);
+	text(CARD_X, 1180, 4, lab, INK, 1);
+	fill_round(CARD_X, 1290, CARD_W, 80, 40, OFFC);
+	int fw = CARD_W * bright / 100;
+	fw = fw < 80 ? 80 : fw;
+	fill_round(CARD_X, 1290, fw, 80, 40, BLUEC);
+	fill_circle(CARD_X + fw - 40, 1330, 32, WHITEC);
+}
+
+static void cc_draw(void)
+{
+	fill_rect(0, 0, FB_W, FB_H, BG);
+	draw_status();
+	fill_round(40, 90, 300, 100, 40, CARD);
+	icon(ICON_CHEVRON_LEFT_44, 90, 140, INK);
+	text(130, 108, 4, back_text(), INK, 1);
+	text(CARD_X, 260, 5, L6("Control Center", "Пункт управления", "Пункт керування", "Kontrollzentrum", "Centro de control", "Centre de contrôle"), INK, 1);
+	text(CARD_X, 390, 3, L6("Applied at the next iOS boot.", "Применяется при следующей загрузке iOS.", "Застосовується при наступному запуску iOS.",
+	    "Gilt beim nächsten iOS-Start.", "Se aplica en el próximo inicio de iOS.", "Appliqué au prochain démarrage d'iOS."), GREY, 0);
+	cc_tile(0, ICON_WIFI_52, "Wi-Fi", opt[3]);
+	cc_tile(1, ICON_DOT_RADIOWAVES_LEFT_AND_RIGHT_52, "Bluetooth", opt[4]);
+	cc_tile(2, ICON_WIFI_52, L6("Wi-Fi test", "Тест Wi-Fi", "Тест Wi-Fi", "WLAN-Test", "Prueba Wi-Fi", "Test Wi-Fi"), wifitest);
+	cc_tile(3, ICON_GLOBE_52, page_title(P_TZ), 0);
+	cc_slider();
+}
+
+/* 1: open the time zone page */
+static int control_center(void)
+{
+	cc_draw();
+	uint64_t dl = cnt() + frq() * 40;
+	int was_down = 0, lx = 0, ly = 0;
+	while (cnt() < dl) {
+		if (key_event() > 0)
+			return 0;
+		if (has_touch) {
+			int x = 0, y = 0, r = touch_poll(&x, &y);
+			if (r > 0) {
+				was_down = 1;
+				lx = x; ly = y;
+				dl = cnt() + frq() * 40;
+				if (y >= 1230 && y < 1420) {
+					int v = (x - CARD_X) * 100 / CARD_W;
+					v = v < 5 ? 5 : v > 100 ? 100 : v;
+					if (v != bright) {
+						bright = v;
+						cc_slider();
+					}
+				}
+			} else if (r == 0 && was_down) {
+				was_down = 0;
+				if (lx < 360 && ly < 220)
+					return 0;
+				for (int k = 0; k < 4; ++k) {
+					int tx = CARD_X + (k % 2) * (CARD_W / 2 + 10), ty = 520 + (k / 2) * 330;
+					if (lx >= tx && lx < tx + CARD_W / 2 - 10 && ly >= ty && ly < ty + 300) {
+						if (k == 3)
+							return 1;
+						if (k == 0)
+							opt[3] = !opt[3];
+						else if (k == 1)
+							opt[4] = !opt[4];
+						else
+							wifitest = !wifitest;
+						cc_draw();
+					}
+				}
+			}
+		}
+		wait_us(6000);
+	}
+	return 0;
+}
+
 /* ------------------------------------------------------------------ navigation */
 
-/* result of a page: row chosen, -2 globe, -3 power, -4 back corner, -1 timeout / dead inputs */
+/* result of a page: row chosen, -2 globe, -3 power, -4 back corner, -5 status bar (control centre), -1 timeout / dead inputs */
 static int pick(int p, int *selp)
 {
 	int rows = page_rows(p), sel = *selp, cy0 = card_y(p);
 	uint64_t deadline = cnt() + frq() * MENU_TIMEOUT_S;
 	int was_down = 0, lx = 0, ly = 0;
 	draw_page(p, sel);
+	uint64_t next_clock = cnt() + frq() * 5;
 	for (;;) {
+		if (cnt() > next_clock) {
+			draw_status();
+			next_clock = cnt() + frq() * 5;
+		}
 		int e = key_event();
 		if (e < 0 && !has_touch)
 			return -1;
@@ -741,6 +996,8 @@ static int pick(int p, int *selp)
 			} else if (r == 0 && was_down) {
 				was_down = 0;
 				*selp = sel;
+				if (ly < 66 && lx > 300)
+					return -5;
 				int dx = lx - 110, dy = ly - 130, ex = lx - 970;
 				if (dx * dx + dy * dy < 90 * 90)
 					return p == P_MAIN ? -2 : -4;
@@ -768,7 +1025,7 @@ const char *menu_run(void)
 	has_touch = touch_init();
 	if (!keys && !has_touch)
 		return "";
-	int sel[5] = { 0, 0, 0, 0, 0 };
+	int sel[6] = { 0, 0, 0, 0, 0, 0 };
 	int p = P_MAIN, back_to = P_MAIN;
 	for (;;) {
 		int c = pick(p, &sel[p]);
@@ -784,8 +1041,13 @@ const char *menu_run(void)
 		}
 		if (c == -3)
 			menu_poweroff();
+		if (c == -5) {
+			if (control_center())
+				p = P_TZ;
+			continue;
+		}
 		if (c == -4) {
-			p = p == P_TEST ? P_SET : p == P_LANG ? back_to : P_MAIN;
+			p = p == P_TEST || p == P_TZ ? P_SET : p == P_LANG ? back_to : P_MAIN;
 			continue;
 		}
 		if (p == P_MAIN) {
@@ -805,9 +1067,20 @@ const char *menu_run(void)
 			if (c < 5)
 				opt[c] = !opt[c];
 			else if (c == 5)
+				p = P_TZ;
+			else if (c == 6)
 				p = P_TEST;
 			else
 				p = P_MAIN;
+		} else if (p == P_TZ) {
+			if (c == 1 && tz_min > -720)
+				tz_min -= 60;
+			else if (c == 2 && tz_min < 840)
+				tz_min += 60;
+			else if (c == 3)
+				tz_min += tz_min % 60 ? -30 : 30;
+			else if (c == 4)
+				p = P_SET;
 		} else if (p == P_LANG) {
 			if (c < NLANG)
 				lang = c;

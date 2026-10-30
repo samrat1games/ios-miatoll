@@ -1,0 +1,15 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3760,5 +3760,11 @@
+ 	touch_wait(10 * 1000u);
+ 	sm_probe();
++	/* 0195: boot-arg sweetbright=<percent> from the UEFI menu's control centre */
++	int bpct = 0;
++	if (PE_parse_boot_argn("sweetbright", &bpct, sizeof(bpct)) && bpct >= 1 && bpct <= 100) {
++		sm_bl_level = bpct * 4095 / 100;
++		(void)sm_bl_apply((unsigned)sm_bl_level);
++	}
+ 	int boot = 1;
+ 	(void)PE_parse_boot_argn("sweetmodemstd", &sm_std, sizeof(sm_std));
+ 	(void)PE_parse_boot_argn("sweetmodemboot", &boot, sizeof(boot));
