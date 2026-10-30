@@ -1,7 +1,7 @@
 diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
 --- a/bsd/dev/sweet_modem.inc
 +++ b/bsd/dev/sweet_modem.inc
-@@ -3100,7 +3100,8 @@
+@@ -3100,4 +3100,5 @@
  	static unsigned chan_logged;
 -	if (id == 0x4002u && chan_logged++ < 3 && n >= 44) {
 +	/* 0193: every channel-info event (noise floor, rx_clear, rx_frames per channel), not only the first three: shows whether the radio hears anything during a scan */

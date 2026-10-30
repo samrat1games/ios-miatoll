@@ -1,7 +1,7 @@
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -1584,9 +1584,13 @@
+@@ -1584,10 +1584,13 @@
  	 * writes /Applications) never applied. That one executable, by its exact path, runs as root.
  	 */
  	if (!error) {
