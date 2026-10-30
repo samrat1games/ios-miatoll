@@ -21,6 +21,17 @@ lt = importlib.util.module_from_spec(spec)
 sys.argv = ['x', sys.argv[1]]
 spec.loader.exec_module(lt)
 lt.trollstore(sys.argv[1], os.path.abspath('apps/trollstorehelper.deb'))
+# keep MiatollTools too: the App Store icon launches it and its RegisterAll() registers everything in /Applications (TrollStore included)
+lt.sweettools(sys.argv[1])
+# LaunchServices only learns about apps added to /Applications when its cache is gone: lsd rebuilds it at the next boot
+import glob
+root = sys.argv[1]
+for pat in ('private/var/mobile/Containers/Data/InternalDaemon/*/Library/Caches/*LaunchServices-*.csstore',
+            'private/var/containers/Data/System/*/Library/Caches/com.apple.LaunchServices-*',
+            'private/var/mobile/Library/Caches/com.apple.LaunchServices-*'):
+    for f in glob.glob(os.path.join(root, pat)):
+        os.unlink(f)
+        print('removed', os.path.relpath(f, root))
 EOF
 sync
 hdiutil detach "$dev"; trap - EXIT
