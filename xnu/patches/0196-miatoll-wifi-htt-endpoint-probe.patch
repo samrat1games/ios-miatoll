@@ -1,0 +1,60 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -2753,6 +2753,7 @@
+ };
+ 
+ static volatile int wl_htc_ready;
++static volatile int wl_htt_eid = -1;                    /* 0196: endpoint of the HTT data service */
+ static volatile int wl_wmi_eid = -1;                   /* 0180: endpoint and credits of the WMI service */
+ static volatile int wl_wmi_credits;
+ static volatile uint32_t wl_total_credits;
+@@ -2838,6 +2839,16 @@
+ 	if (logged++ < 40) {
+ 		printf("SWEET WLCE: CE%u rx %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x\n",
+ 		    ce, n, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13]);
++	}
++	{
++		/* 0196: everything that arrives on an endpoint other than control and WMI (the HTT data service most of all): is the
++		 * scan's mgmt traffic coming that way? */
++		static unsigned other_logged;
++		if (n >= 8 && b[0] != 0 && (int)b[0] != wl_wmi_eid && other_logged++ < 80) {
++			printf("SWEET WLCE: endpoint %u (CE%u) rx %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x\n",
++			    b[0], ce, n, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], n > 8 ? b[8] : 0, n > 9 ? b[9] : 0, n > 10 ? b[10] : 0,
++			    n > 11 ? b[11] : 0, n > 12 ? b[12] : 0, n > 13 ? b[13] : 0, n > 14 ? b[14] : 0, n > 15 ? b[15] : 0);
++		}
+ 	}
+ 	if (n < 10) {
+ 		return;
+@@ -3527,6 +3538,21 @@
+ 		int e = wl_wmi_send(0x4001u, b, 28);            /* WMI_TLV_PDEV_SET_REGDOMAIN_CMDID */
+ 		snprintf(wl_last, sizeof(wl_last), "regdomain %#x ctl %#x/%#x sent, error %d\n", rd, c2, c5, e);
+ 		wl_wmi_wait(1000, &wl_never);
++	} else if (strncmp(c, "htt", 3) == 0) {
++		/* 0196: HTT_H2T_MSG_TYPE_VERSION_REQ (0) on the HTT endpoint, no credit flow control; the answer shows in the log (endpoint lines) */
++		if (wl_htt_eid < 0 || (!wl_wtx && wl_alloc(0x1000, &wl_wtx, &wl_wtx_pa))) {
++			snprintf(wl_last, sizeof(wl_last), "no HTT endpoint\n");
++		} else {
++			uint8_t *hp = (uint8_t *)wl_wtx;
++			memset(hp, 0, 16);
++			hp[0] = (uint8_t)wl_htt_eid;
++			hp[2] = 4;                              /* payload length: msg type + padding */
++			hp[5] = wl_wseq++;
++			wl_sync(wl_wtx, wl_wtx_pa, 12);
++			int e = wl_ce_send(3, wl_wtx_pa, 12, 0);
++			snprintf(wl_last, sizeof(wl_last), "HTT version request sent on endpoint %d, error %d\n", (int)wl_htt_eid, e);
++			wl_wmi_wait(1500, &wl_never);
++		}
+ 	} else if (strncmp(c, "chan", 4) == 0) {
+ 		int e = wl_wmi_chan_list();
+ 		snprintf(wl_last, sizeof(wl_last), "channel list sent, error %d\n", e);
+@@ -3794,6 +3820,9 @@
+ 		int hv = wl_wmi_eid;
+ 		int e2 = wl_htc_connect(0x300, 8);
+ 		printf("SWEET WLCE: connect HTT data service: %d (endpoint %d)\n", e2, (int)wl_conn_eid);
++		if (!e2) {
++			wl_htt_eid = wl_conn_eid;
++		}
+ 		wl_wmi_eid = hv;
+ 	}
+ 	err = wl_htc_start();
