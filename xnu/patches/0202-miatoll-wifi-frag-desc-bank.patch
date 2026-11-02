@@ -1,0 +1,58 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3620,8 +3620,8 @@
+  */
+ #define WL_HTT_RING_N   128u
+ #define WL_HTT_BUF_SZ   2048u
+-static vm_offset_t wl_htt_ring, wl_htt_bufs, wl_htt_idx, wl_htt_txb;
+-static uint64_t wl_htt_ring_pa, wl_htt_bufs_pa, wl_htt_idx_pa, wl_htt_txb_pa;
++static vm_offset_t wl_htt_ring, wl_htt_bufs, wl_htt_idx, wl_htt_txb, wl_htt_frag;
++static uint64_t wl_htt_ring_pa, wl_htt_bufs_pa, wl_htt_idx_pa, wl_htt_txb_pa, wl_htt_frag_pa;
+ 
+ static int
+ wl_htt_send(const uint8_t *msg, uint16_t len)
+@@ -3663,7 +3663,34 @@
+ 	for (unsigned ms = 0; ms < 500; ms += 10) {
+ 		wl_ce_poll();
+ 		touch_wait(10);
++	}
++	/*
++	 * 0202: WCN3990 is a continuous_frag_desc target: ath10k sends the fragment descriptor bank before the ring config, and
++	 * without it the firmware has no memory for the receive fragments and ignores the ring.
++	 */
++	int e0 = 0;
++	if (!wl_htt_frag) {
++		if (wl_alloc(8192, &wl_htt_frag, &wl_htt_frag_pa)) {
++			return ENOMEM;
++		}
+ 	}
++	{
++		uint8_t f[64];
++		memset(f, 0, sizeof(f));
++		f[0] = 6;                                       /* HTT_H2T_MSG_TYPE_FRAG_DESC_BANK_CFG */
++		f[1] = 0;                                       /* info: byte depth, no q state */
++		f[2] = 1;                                       /* one bank */
++		f[3] = 96;                                      /* sizeof(struct htt_msdu_ext_desc_64) */
++		uint64_t base = wl_htt_frag_pa;
++		memcpy(f + 4, &base, 8);                        /* bank_base_addrs[0] */
++		uint16_t bid[2] = {0, 63};                      /* bank_min_id, bank_max_id */
++		memcpy(f + 36, bid, 4);                         /* bank_id[0] */
++		e0 = wl_htt_send(f, 64);
++	}
++	for (unsigned ms = 0; ms < 500; ms += 10) {
++		wl_ce_poll();
++		touch_wait(10);
++	}
+ 	uint8_t m[48];
+ 	memset(m, 0, sizeof(m));
+ 	m[0] = 2;                                               /* HTT_H2T_MSG_TYPE_RX_RING_CFG */
+@@ -3679,7 +3706,7 @@
+ 	memcpy(m + 20, f, sizeof(f));
+ 	memcpy(m + 40, g, sizeof(g));
+ 	int e2 = wl_htt_send(m, 48);
+-	printf("SWEET HTT: version request error %d, rx ring cfg error %d (ring %#llx idx %#llx, %u buffers of %u)\n", e1, e2,
++	printf("SWEET HTT: version request error %d, frag bank error %d, rx ring cfg error %d (ring %#llx idx %#llx, %u buffers of %u)\n", e1, e0, e2,
+ 	    (unsigned long long)wl_htt_ring_pa, (unsigned long long)wl_htt_idx_pa, WL_HTT_RING_N / 2 - 1, WL_HTT_BUF_SZ);
+ 	for (unsigned ms = 0; ms < 500; ms += 10) {
+ 		wl_ce_poll();
