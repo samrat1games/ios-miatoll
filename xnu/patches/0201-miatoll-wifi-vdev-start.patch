@@ -1,0 +1,60 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3276,14 +3276,41 @@
+ wl_wmi_vdev_create(void)
+ {
+ 	uint8_t b[64];
+-	uint8_t *p = wl_tlv(b, WMI_TAG_VDEV_CREATE_CMD, 20);
++	/* 0201: 18 bytes, the exact sizeof(struct wmi_vdev_create_cmd): the extra two pad bytes after the mac address made the
++	 * firmware drop the command, so there was no vdev at all. */
++	uint8_t *p = wl_tlv(b, WMI_TAG_VDEV_CREATE_CMD, 18);
+ 	uint32_t v[3] = {0, 2, 0};             /* vdev 0, station, no subtype */
+ 	memcpy(p, v, 12);
+ 	p += 12;
+-	memset(p, 0, 8);
+ 	memcpy(p, wl_mac, 6);
+-	p += 8;
++	p += 6;
+ 	return wl_wmi_send(WMI_CMD_VDEV_CREATE, b, (unsigned)(p - b));
++}
++
++/*
++ * 0201: vdev start on channel 1, after ath10k_wmi_tlv_op_gen_vdev_start. ath10k always starts the vdev before it asks for a scan,
++ * and the firmware only delivers received management frames (that is where the scan results come from) to a started vdev.
++ */
++#define WMI_CMD_VDEV_START_REQUEST      0x5003u
++#define WMI_TAG_VDEV_START_REQUEST      88
++
++static int
++wl_wmi_vdev_start(void)
++{
++	uint8_t b[128];
++	uint8_t *p = wl_tlv(b, WMI_TAG_VDEV_START_REQUEST, 72);
++	uint8_t *c = p;
++	memset(c, 0, 72);
++	c[0] = 0;                               /* vdev 0 */
++	c[8] = 100;                             /* beacon interval */
++	c[12] = 2;                              /* dtim period */
++	p += 72;
++	p = wl_tlv(p, 80u, 24);
++	uint32_t ch[6] = {2412, 2412, 0, 1u | (1u << 11) | (1u << 12), 0u | (40u << 8) | (40u << 16), 0u | (40u << 8)};
++	memcpy(p, ch, 24);
++	p += 24;
++	p = wl_tlv(p, WMI_TAG_ARRAY_STRUCT, 0);
++	return wl_wmi_send(WMI_CMD_VDEV_START_REQUEST, b, (unsigned)(p - b));
+ }
+ 
+ static int
+@@ -3698,6 +3725,11 @@
+ 		touch_wait(10);
+ 	}
+ 	wl_wmi_vdev_create();
++	for (unsigned ms = 0; ms < 1500; ms += 10) {
++		wl_ce_poll();
++		touch_wait(10);
++	}
++	wl_wmi_vdev_start();                       /* 0201 */
+ 	for (unsigned ms = 0; ms < 1500; ms += 10) {
+ 		wl_ce_poll();
+ 		touch_wait(10);
