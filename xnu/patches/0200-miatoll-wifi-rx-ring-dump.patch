@@ -1,0 +1,40 @@
+diff --git a/bsd/dev/sweet_modem.inc b/bsd/dev/sweet_modem.inc
+--- a/bsd/dev/sweet_modem.inc
++++ b/bsd/dev/sweet_modem.inc
+@@ -3716,6 +3716,36 @@
+ 	}
+ 	printf("SWEET WMI: scan %s, %u access points\n", wl_scan_done ? "complete" : "did not complete", wl_nbss);
+ 	wl_write_networks();
++	/*
++	 * 0200: did the firmware really use the 0199 receive ring? An empty ring after a completed scan means the ring config was
++	 * refused or the buffers are somewhere else; buffers with data mean only the parsing is missing.
++	 */
++	if (wl_htt_ring && wl_htt_bufs) {
++		wl_sync(wl_htt_ring, wl_htt_ring_pa, WL_HTT_RING_N * 8u);
++		wl_sync(wl_htt_idx, wl_htt_idx_pa, 4);
++		unsigned moved = 0, filled = 0;
++		for (unsigned i = 0; i < WL_HTT_RING_N; ++i) {
++			uint8_t *buf = (uint8_t *)(wl_htt_bufs + (vm_offset_t)i * WL_HTT_BUF_SZ);
++			uint64_t *slot = (uint64_t *)(wl_htt_ring + (vm_offset_t)i * 8u);
++			wl_sync((vm_offset_t)buf, wl_htt_bufs_pa + (uint64_t)i * WL_HTT_BUF_SZ, WL_HTT_BUF_SZ);
++			if (*slot != wl_htt_bufs_pa + (uint64_t)i * WL_HTT_BUF_SZ) {
++				++moved;
++			}
++			unsigned nz = 0;
++			for (unsigned k = 0; k < WL_HTT_BUF_SZ; ++k) {
++				nz += buf[k] != 0;
++			}
++			if (nz) {
++				if (filled < 4) {
++					printf("SWEET HTT: buf %u: %u nonzero, %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n", i, nz,
++					    buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]);
++				}
++				++filled;
++			}
++		}
++		printf("SWEET HTT: rx ring idx %u of %u, %u slots rewritten, %u buffers with data\n",
++		    *(volatile uint32_t *)wl_htt_idx, WL_HTT_RING_N / 2 - 1, moved, filled);
++	}
+ 	{
+ 		uint32_t dbg = 0;
+ 		(void)PE_parse_boot_argn("wifidbg", &dbg, sizeof(dbg));
